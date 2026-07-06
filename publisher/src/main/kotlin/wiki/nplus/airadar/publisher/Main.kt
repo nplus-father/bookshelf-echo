@@ -21,6 +21,7 @@ private val log = LoggerFactory.getLogger("publisher")
  * itself; enable with PUBLISH_GIT=true once CONTENT_DIR is a git checkout.
  */
 fun main() {
+    val registry = wiki.nplus.airadar.common.Metrics.start("publisher", 9104)
     val repo = ItemRepository(Db.dataSource("publisher"))
     val contentDir = Path.of(Config.str("CONTENT_DIR", "out/content"))
     val publishGit = Config.bool("PUBLISH_GIT", false)
@@ -28,8 +29,18 @@ fun main() {
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)
 
+    val snapshotJob = SnapshotJob(repo, contentDir, java.net.http.HttpClient.newHttpClient())
+    val snapshotMinutes = Config.int("SNAPSHOT_INTERVAL_MINUTES", 60)
+    kotlin.concurrent.thread(isDaemon = true, name = "metrics-snapshot") {
+        while (true) {
+            runCatching { snapshotJob.capture(java.time.Instant.now()) }
+                .onFailure { log.warn("snapshot failed: {}", it.toString()) }
+            Thread.sleep(snapshotMinutes * 60_000L)
+        }
+    }
+
     log.info("publisher: consuming {} → {}", RabbitTopology.PUBLISH_QUEUE, contentDir.toAbsolutePath())
-    Rabbit.consume(channel, RabbitTopology.PUBLISH_QUEUE) { body ->
+    Rabbit.consume(channel, RabbitTopology.PUBLISH_QUEUE, registry) { body ->
         val itemId = StageMessage.decode(body).itemId
         val item = repo.findItem(itemId) ?: error("item $itemId not found")
 

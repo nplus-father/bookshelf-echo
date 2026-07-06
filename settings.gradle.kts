@@ -10,4 +10,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "ai-radar"
 
-include("common", "producers", "enricher", "digester", "publisher")
+include("common", "producers", "enricher", "digester", "publisher", "ops")

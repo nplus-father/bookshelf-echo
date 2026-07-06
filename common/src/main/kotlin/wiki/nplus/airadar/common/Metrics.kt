@@ -1,0 +1,39 @@
+package wiki.nplus.airadar.common
+
+import com.sun.net.httpserver.HttpServer
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.prometheusmetrics.PrometheusConfig
+import io.micrometer.prometheusmetrics.PrometheusMeterRegistry
+import org.slf4j.LoggerFactory
+import java.net.InetSocketAddress
+
+/**
+ * Per-app Prometheus endpoint, localhost-only like everything else
+ * (zero-inbound posture, ADR-006). The public dashboard never scrapes this
+ * directly — it consumes the snapshots the publisher commits to the site repo.
+ */
+object Metrics {
+    private val log = LoggerFactory.getLogger(Metrics::class.java)
+
+    fun start(appName: String, defaultPort: Int): MeterRegistry {
+        val registry = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        val port = Config.int("METRICS_PORT", defaultPort)
+        if (port > 0) {
+            try {
+                val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 0)
+                server.createContext("/metrics") { exchange ->
+                    val body = registry.scrape().toByteArray()
+                    exchange.responseHeaders.add("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                    exchange.sendResponseHeaders(200, body.size.toLong())
+                    exchange.responseBody.use { it.write(body) }
+                }
+                server.start()
+                log.info("{}: /metrics on 127.0.0.1:{}", appName, port)
+            } catch (e: java.io.IOException) {
+                // Metrics are auxiliary — a port conflict must not kill the consumer.
+                log.error("{}: /metrics endpoint disabled, cannot bind 127.0.0.1:{}: {}", appName, port, e.toString())
+            }
+        }
+        return registry
+    }
+}

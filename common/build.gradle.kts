@@ -13,6 +13,7 @@ dependencies {
     api(libs.amqp.client)
     api(libs.hikari)
     api(libs.logback.classic)
+    api(libs.micrometer.prometheus)
     runtimeOnly(libs.postgresql)
 
     testImplementation(libs.kotlin.test)

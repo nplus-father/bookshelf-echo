@@ -14,15 +14,19 @@ import java.net.http.HttpClient
 private val log = LoggerFactory.getLogger("digester")
 
 fun main() {
+    val registry = wiki.nplus.airadar.common.Metrics.start("digester", 9103)
     val repo = ItemRepository(Db.dataSource("digester"))
     val llm = LlmClient.fromEnv(HttpClient.newHttpClient())
     val dailyBudgetUsd = Config.double("DAILY_LLM_BUDGET_USD", 0.50)
     val connection = Rabbit.connect("digester")
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)
+    val inputTokens = registry.counter("airadar_llm_tokens_total", "type", "input")
+    val outputTokens = registry.counter("airadar_llm_tokens_total", "type", "output")
+    val cost = registry.counter("airadar_llm_cost_usd_total")
 
     log.info("digester: consuming {} (provider={}, model={}, budget USD {}/day)", RabbitTopology.DIGEST_QUEUE, llm.javaClass.simpleName, llm.model, dailyBudgetUsd)
-    Rabbit.consume(channel, RabbitTopology.DIGEST_QUEUE) { body ->
+    Rabbit.consume(channel, RabbitTopology.DIGEST_QUEUE, registry) { body ->
         val itemId = StageMessage.decode(body).itemId
         val item = repo.findItem(itemId) ?: error("item $itemId not found")
         if (item.state != ItemState.ENRICHED.name) {
@@ -40,7 +44,11 @@ fun main() {
 
         val digest = llm.digest(item.source, item.title, item.url, item.extractedText)
         repo.saveDigest(itemId, digest)
-        repo.recordUsage(itemId, "DIGEST", digest.model, digest.inputTokens, digest.outputTokens, llm.cost(digest.inputTokens, digest.outputTokens))
+        val usd = llm.cost(digest.inputTokens, digest.outputTokens)
+        repo.recordUsage(itemId, "DIGEST", digest.model, digest.inputTokens, digest.outputTokens, usd)
+        inputTokens.increment(digest.inputTokens.toDouble())
+        outputTokens.increment(digest.outputTokens.toDouble())
+        cost.increment(usd)
         if (repo.transition(itemId, ItemState.ENRICHED, ItemState.DIGESTED)) {
             Rabbit.publish(channel, "", RabbitTopology.PUBLISH_QUEUE, StageMessage(itemId).encode())
             log.info("digested item {} (score {}): {}", itemId, digest.significanceScore, item.title)

@@ -1,0 +1,15 @@
+[Unit]
+Description=ai-radar publisher
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspace/ai-radar
+EnvironmentFile=%h/workspace/ai-radar/.env
+ExecStart=%h/workspace/ai-radar/publisher/build/install/publisher/bin/publisher
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

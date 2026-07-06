@@ -1,0 +1,15 @@
+[Unit]
+Description=ai-radar digester
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspace/ai-radar
+EnvironmentFile=%h/workspace/ai-radar/.env
+ExecStart=%h/workspace/ai-radar/digester/build/install/digester/bin/digester
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

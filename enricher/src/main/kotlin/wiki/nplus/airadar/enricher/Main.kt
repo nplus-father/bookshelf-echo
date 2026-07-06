@@ -16,6 +16,7 @@ private val log = LoggerFactory.getLogger("enricher")
 private val json = Json { ignoreUnknownKeys = true }
 
 fun main() {
+    val registry = wiki.nplus.airadar.common.Metrics.start("enricher", 9102)
     val repo = ItemRepository(Db.dataSource("enricher"))
     val fetcher = ContentFetcher()
     val connection = Rabbit.connect("enricher")
@@ -23,7 +24,7 @@ fun main() {
     Rabbit.declareTopology(channel)
 
     log.info("enricher: consuming {}", RabbitTopology.INGEST_QUEUE)
-    Rabbit.consume(channel, RabbitTopology.INGEST_QUEUE) { body ->
+    Rabbit.consume(channel, RabbitTopology.INGEST_QUEUE, registry) { body ->
         val envelope = json.decodeFromString(ItemEnvelope.serializer(), body)
         val canonical = UrlCanonicalizer.canonicalize(envelope.url)
         val hash = UrlCanonicalizer.contentHash(envelope.title, envelope.url)

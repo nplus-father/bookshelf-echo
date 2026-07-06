@@ -220,6 +220,49 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
+    fun stateCounts(): Map<String, Int> = ds.connection.use { c ->
+        c.prepareStatement("SELECT state, count(*) FROM items GROUP BY state").use { st ->
+            st.executeQuery().use { rs ->
+                buildMap { while (rs.next()) put(rs.getString(1), rs.getInt(2)) }
+            }
+        }
+    }
+
+    data class LlmToday(val costUsd: Double, val inputTokens: Long, val outputTokens: Long, val calls: Int)
+
+    fun llmToday(): LlmToday = ds.connection.use { c ->
+        c.prepareStatement(
+            """
+            SELECT COALESCE(SUM(cost_usd), 0), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COUNT(*)
+            FROM llm_usage
+            WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'
+            """.trimIndent(),
+        ).use { st ->
+            st.executeQuery().use { rs ->
+                rs.next()
+                LlmToday(rs.getDouble(1), rs.getLong(2), rs.getLong(3), rs.getInt(4))
+            }
+        }
+    }
+
+    fun receivedLast24h(): Int = ds.connection.use { c ->
+        c.prepareStatement("SELECT count(*) FROM items WHERE received_at >= now() - interval '24 hours'").use { st ->
+            st.executeQuery().use { rs ->
+                rs.next()
+                rs.getInt(1)
+            }
+        }
+    }
+
+    fun saveSnapshot(snapshotJson: String) {
+        ds.connection.use { c ->
+            c.prepareStatement("INSERT INTO metrics_snapshots (snapshot) VALUES (?::jsonb)").use { st ->
+                st.setString(1, snapshotJson)
+                st.executeUpdate()
+            }
+        }
+    }
+
     fun recordPublish(kind: String, targetPath: String, gitCommit: String?, itemCount: Int, status: String) {
         ds.connection.use { c ->
             c.prepareStatement(

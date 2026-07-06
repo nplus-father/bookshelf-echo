@@ -6,6 +6,8 @@ import com.rabbitmq.client.Connection
 import com.rabbitmq.client.ConnectionFactory
 import com.rabbitmq.client.DefaultConsumer
 import com.rabbitmq.client.Envelope
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Timer
 import org.slf4j.LoggerFactory
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
@@ -75,8 +77,10 @@ object Rabbit {
      * If IDLE_EXIT_SECONDS is set the process exits once the queue has been
      * quiet that long — used by integration verification, never in production.
      */
-    fun consume(channel: Channel, queue: String, handler: (String) -> Unit) {
+    fun consume(channel: Channel, queue: String, registry: MeterRegistry? = null, handler: (String) -> Unit) {
         channel.basicQos(Config.int("PREFETCH", 8))
+        fun outcome(name: String) = registry?.counter("airadar_messages_total", "queue", queue, "outcome", name)?.increment()
+        val timer = registry?.let { Timer.builder("airadar_handle_seconds").tag("queue", queue).register(it) }
         val lastActivity = AtomicLong(System.currentTimeMillis())
         Config.int("IDLE_EXIT_SECONDS", 0).takeIf { it > 0 }?.let { idle ->
             thread(isDaemon = true, name = "idle-exit") {
@@ -96,18 +100,24 @@ object Rabbit {
                 override fun handleDelivery(tag: String, envelope: Envelope, props: AMQP.BasicProperties, body: ByteArray) {
                     lastActivity.set(System.currentTimeMillis())
                     val message = String(body)
+                    val start = System.nanoTime()
                     try {
                         handler(message)
+                        outcome("ok")
                     } catch (e: RetryableFailure) {
+                        outcome("retry")
                         routeToRetry(queue, message, props, e)
                     } catch (e: BudgetExhausted) {
+                        outcome("budget_parked")
                         log.info("budget exhausted, re-parking in longest tier: {}", e.message)
                         val headers = props.headers.orEmpty().mapValues { it.value as Any }
                         publish(channel, "", RabbitTopology.retryQueue(queue, RabbitTopology.RETRY_TIERS.size), message, headers)
                     } catch (e: Exception) {
+                        outcome("dlq")
                         log.error("non-retryable failure, parking in DLQ", e)
                         toDlq(queue, message, props, e)
                     }
+                    timer?.record(System.nanoTime() - start, java.util.concurrent.TimeUnit.NANOSECONDS)
                     channel.basicAck(envelope.deliveryTag, false)
                     lastActivity.set(System.currentTimeMillis())
                 }
@@ -130,7 +140,7 @@ object Rabbit {
                 private fun toDlq(origin: String, message: String, props: AMQP.BasicProperties, e: Exception) {
                     val headers = mapOf<String, Any>(
                         RabbitTopology.ORIGIN_QUEUE_HEADER to origin,
-                        "x-error" to (e.message ?: e.javaClass.simpleName).take(500),
+                        "x-error" to (e.message ?: e.javaClass.simpleName).replace(Regex("\\s+"), " ").take(500),
                     )
                     publish(channel, "", RabbitTopology.DLQ, message, headers)
                 }

@@ -22,6 +22,7 @@ private val json = Json { encodeDefaults = true }
  * for verification.
  */
 fun main() {
+    val registry = wiki.nplus.airadar.common.Metrics.start("producers", 9101)
     val connection = Rabbit.connect("producers")
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)
@@ -48,8 +49,10 @@ fun main() {
                                 json.encodeToString(ItemEnvelope.serializer(), item),
                             )
                         }
+                        registry.counter("airadar_produced_total", "source", name).increment(items.size.toDouble())
                         log.info("{}: published {} items", name, items.size)
                     } catch (e: Exception) {
+                        registry.counter("airadar_poll_failures_total", "source", name).increment()
                         log.warn("{}: poll failed, next cadence will retry: {}", name, e.toString())
                     }
                     if (runOnce) break
