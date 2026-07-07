@@ -18,9 +18,13 @@ object Metrics {
     fun start(appName: String, defaultPort: Int): MeterRegistry {
         val registry = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
         val port = Config.int("METRICS_PORT", defaultPort)
+        // Bind 127.0.0.1 on the host (zero-inbound, ADR-006); inside a container
+        // set METRICS_BIND=0.0.0.0 so Prometheus can scrape over the Docker
+        // network — the port is still never published to the host.
+        val bind = Config.str("METRICS_BIND", "127.0.0.1")
         if (port > 0) {
             try {
-                val server = HttpServer.create(InetSocketAddress("127.0.0.1", port), 0)
+                val server = HttpServer.create(InetSocketAddress(bind, port), 0)
                 server.createContext("/metrics") { exchange ->
                     val body = registry.scrape().toByteArray()
                     exchange.responseHeaders.add("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -28,10 +32,10 @@ object Metrics {
                     exchange.responseBody.use { it.write(body) }
                 }
                 server.start()
-                log.info("{}: /metrics on 127.0.0.1:{}", appName, port)
+                log.info("{}: /metrics on {}:{}", appName, bind, port)
             } catch (e: java.io.IOException) {
                 // Metrics are auxiliary — a port conflict must not kill the consumer.
-                log.error("{}: /metrics endpoint disabled, cannot bind 127.0.0.1:{}: {}", appName, port, e.toString())
+                log.error("{}: /metrics endpoint disabled, cannot bind {}:{}: {}", appName, bind, port, e.toString())
             }
         }
         return registry

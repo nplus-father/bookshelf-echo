@@ -6,6 +6,7 @@ name: ai-radar
 services:
   rabbitmq:
     image: rabbitmq:4-management
+    container_name: ai-radar-rabbitmq
     ports:
       - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
       - "127.0.0.1:${RABBITMQ_MGMT_PORT:-15672}:15672"
@@ -14,12 +15,14 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set in .env}
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      - ./config/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 15s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    networks: [default, infra-shared]   # infra-shared so Prometheus can scrape :15692
 
   postgres:
     image: postgres:17
@@ -51,6 +54,76 @@ services:
       postgres:
         condition: service_healthy
 
+  # ---- pipeline apps (JVM, Jib images) ---------------------------------------
+  # Each joins the ai-radar default net (to reach postgres/rabbitmq by name) and
+  # the external infra-shared-network (so infra-prometheus can scrape its
+  # 127.0.0.1-free metrics port). Config comes from .env; the three vars below
+  # override it for in-container networking. Metrics ports are NOT published to
+  # the host — zero-inbound (ADR-006) is preserved.
+  producers:
+    image: ${AI_RADAR_PRODUCERS_IMAGE:-ghcr.io/nplus-father/ai-radar-producers:latest}
+    container_name: ai-radar-producers
+    env_file: [.env]
+    environment: &app-env
+      DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-airadar}
+      RABBITMQ_HOST: rabbitmq
+      METRICS_BIND: 0.0.0.0
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      flyway: { condition: service_completed_successfully }
+    restart: unless-stopped
+    networks: [default, infra-shared]
+
+  enricher:
+    image: ${AI_RADAR_ENRICHER_IMAGE:-ghcr.io/nplus-father/ai-radar-enricher:latest}
+    container_name: ai-radar-enricher
+    env_file: [.env]
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      flyway: { condition: service_completed_successfully }
+    restart: unless-stopped
+    networks: [default, infra-shared]
+
+  digester:
+    image: ${AI_RADAR_DIGESTER_IMAGE:-ghcr.io/nplus-father/ai-radar-digester:latest}
+    container_name: ai-radar-digester
+    env_file: [.env]
+    environment: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      flyway: { condition: service_completed_successfully }
+    restart: unless-stopped
+    networks: [default, infra-shared]
+
+  publisher:
+    image: ${AI_RADAR_PUBLISHER_IMAGE:-ghcr.io/nplus-father/ai-radar-publisher:latest}
+    container_name: ai-radar-publisher
+    env_file: [.env]
+    environment:
+      DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-airadar}
+      RABBITMQ_HOST: rabbitmq
+      METRICS_BIND: 0.0.0.0
+      CONTENT_DIR: /app/content        # host .env points at an absolute host path
+    volumes:
+      - ./out/content:/app/content     # daily/weekly markdown persists on the host
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      flyway: { condition: service_completed_successfully }
+    restart: unless-stopped
+    networks: [default, infra-shared]
+
 volumes:
   rabbitmq-data:
   pg-data:
+
+networks:
+  # ai-radar's own bridge (auto-created as ai-radar_default) is referenced as
+  # `default`; infra-shared-network is created by the nplus-infra stack.
+  infra-shared:
+    name: infra-shared-network
+    external: true
