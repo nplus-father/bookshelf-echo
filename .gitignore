@@ -5,3 +5,6 @@ build/
 *.iml
 local.properties
 .kotlin/
+
+# generated pipeline output
+out/
