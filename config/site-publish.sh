@@ -30,6 +30,10 @@ while true; do
   git add -A
   if ! git diff --cached --quiet; then
     git commit -q -m "content: auto-publish $(date -u +%FT%TZ)"
+  fi
+  # rebase 後 local 可能已領先（先前失敗待補推的 commits）—
+  # 只要領先就推，不限定「這一輪有新 commit」才推。
+  if [ "$(git rev-list --count FETCH_HEAD..HEAD)" -gt 0 ]; then
     if out=$(git push "$REPO_URL" HEAD:main 2>&1); then
       echo "pushed at $(date -u +%FT%TZ)"
     else
