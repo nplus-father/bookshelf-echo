@@ -57,9 +57,13 @@ services:
   # ---- pipeline apps (JVM, Jib images) ---------------------------------------
   # Each joins the ai-radar default net (to reach postgres/rabbitmq by name) and
   # the external infra-shared-network (so infra-prometheus can scrape its
-  # 127.0.0.1-free metrics port). Config comes from .env; the three vars below
-  # override it for in-container networking. Metrics ports are NOT published to
-  # the host — zero-inbound (ADR-006) is preserved.
+  # 127.0.0.1-free metrics port). Config comes from .env; the vars below override
+  # it for in-container networking. Metrics ports are NOT published to the host —
+  # zero-inbound (ADR-006) is preserved.
+  #
+  # The *_PORT vars in .env are HOST bindings and may be remapped to dodge a
+  # conflict; inside the network each service always listens on its stock port,
+  # so they are pinned here rather than inherited from .env.
   producers:
     image: ${AI_RADAR_PRODUCERS_IMAGE:-ghcr.io/nplus-father/ai-radar-producers:latest}
     container_name: ai-radar-producers
@@ -67,6 +71,8 @@ services:
     environment: &app-env
       DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-airadar}
       RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_MGMT_PORT: "15672"
       METRICS_BIND: 0.0.0.0
     depends_on:
       postgres: { condition: service_healthy }
@@ -104,9 +110,7 @@ services:
     container_name: ai-radar-publisher
     env_file: [.env]
     environment:
-      DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-airadar}
-      RABBITMQ_HOST: rabbitmq
-      METRICS_BIND: 0.0.0.0
+      <<: *app-env
       CONTENT_DIR: /app/content        # host .env points at an absolute host path
     volumes:
       - ./out/content:/app/content     # daily/weekly markdown persists on the host

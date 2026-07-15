@@ -16,8 +16,14 @@ class ItemRepository(private val ds: DataSource) {
     sealed interface InsertOutcome {
         data class New(val itemId: Long) : InsertOutcome
 
-        /** Same (source, external_id) already processed — redelivery or re-poll. */
-        data object AlreadySeen : InsertOutcome
+        /**
+         * Same (source, external_id) already inserted — a re-poll, or a
+         * redelivery. [state] tells the two apart: anything past RECEIVED was
+         * finished by an earlier delivery, but a row still in RECEIVED means a
+         * previous attempt committed the insert and then died before the
+         * ENRICHED transition, so the work must be resumed rather than dropped.
+         */
+        data class AlreadySeen(val itemId: Long, val state: String) : InsertOutcome
 
         /** Same content already ingested via another source. */
         data class DuplicateContent(val itemId: Long, val duplicateOf: Long) : InsertOutcome
@@ -45,8 +51,19 @@ class ItemRepository(private val ds: DataSource) {
                     st.setString(8, envelope.rawPayload?.toString())
                     st.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
                 } ?: run {
+                    // The conflicting row is ours to report on: the caller needs
+                    // its state to decide between no-op and resume.
+                    val existing = c.prepareStatement(
+                        "SELECT id, state FROM items WHERE source = ? AND external_id = ?",
+                    ).use { st ->
+                        st.setString(1, envelope.source)
+                        st.setString(2, envelope.externalId)
+                        st.executeQuery().use { rs ->
+                            if (rs.next()) InsertOutcome.AlreadySeen(rs.getLong(1), rs.getString(2)) else null
+                        }
+                    }
                     c.commit()
-                    return InsertOutcome.AlreadySeen
+                    return existing ?: error("insert conflicted on (${envelope.source}, ${envelope.externalId}) but the row is gone")
                 }
 
                 val duplicateOf = c.prepareStatement(
@@ -111,13 +128,17 @@ class ItemRepository(private val ds: DataSource) {
         val state: String,
         val receivedAt: OffsetDateTime,
         val extractedText: String?,
+        /** When the digest was produced; null until the item reaches DIGESTED. */
+        val digestedAt: OffsetDateTime?,
     )
 
     fun findItem(itemId: Long): ItemRow? = ds.connection.use { c ->
         c.prepareStatement(
             """
-            SELECT i.id, i.source, i.url, i.title, i.state, i.received_at, ic.extracted_text
-            FROM items i LEFT JOIN item_contents ic ON ic.item_id = i.id
+            SELECT i.id, i.source, i.url, i.title, i.state, i.received_at, ic.extracted_text, d.created_at
+            FROM items i
+            LEFT JOIN item_contents ic ON ic.item_id = i.id
+            LEFT JOIN digests d ON d.item_id = i.id
             WHERE i.id = ?
             """.trimIndent(),
         ).use { st ->
@@ -235,6 +256,22 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
+    /**
+     * Any one item digested on the given UTC day, or null if that day has no
+     * digests. Enough to rebuild the day's page: the publisher keys the page on
+     * the digest's created_at and regenerates it from the whole day, so which
+     * item triggers the rebuild does not matter.
+     */
+    fun anyItemDigestedOn(day: LocalDate): Long? = ds.connection.use { c ->
+        c.prepareStatement(
+            "SELECT item_id FROM digests WHERE created_at >= ?::timestamptz AND created_at < ?::timestamptz ORDER BY item_id LIMIT 1",
+        ).use { st ->
+            st.setString(1, day.atStartOfDay().atOffset(ZoneOffset.UTC).toString())
+            st.setString(2, day.plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC).toString())
+            st.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
+        }
+    }
+
     fun stateCounts(): Map<String, Int> = ds.connection.use { c ->
         c.prepareStatement("SELECT state, count(*) FROM items GROUP BY state").use { st ->
             st.executeQuery().use { rs ->
@@ -301,6 +338,7 @@ class ItemRepository(private val ds: DataSource) {
         state = getString(5),
         receivedAt = getObject(6, OffsetDateTime::class.java),
         extractedText = getString(7),
+        digestedAt = getObject(8, OffsetDateTime::class.java),
     )
 }
 

@@ -26,8 +26,12 @@ We must choose the delivery contract consumers are written against.
    step; a crash before it yields redelivery, never loss.
 2. **Idempotency keys per stage:**
    - Enricher: `items UNIQUE (source, external_id)` with
-     `INSERT … ON CONFLICT DO NOTHING`; a conflict means "already processed" →
-     ack and stop.
+     `INSERT … ON CONFLICT DO NOTHING`. A conflict means "already **inserted**",
+     which is not the same as "already processed": the insert commits before the
+     fetch and the `ENRICHED` transition, so a crash in between leaves a row in
+     `RECEIVED` that a later redelivery must **resume**, not ack away. The
+     conflicting row's state decides — past `RECEIVED` → no-op; still
+     `RECEIVED` → redo the enrichment (every step of it is itself idempotent).
    - Cross-source dedup: `content_hash` (canonical URL + normalized title,
      `UrlCanonicalizer` in `:common`); duplicates are recorded with
      `state = DUPLICATE` and `duplicate_of`, not digested twice.
@@ -42,6 +46,10 @@ We must choose the delivery contract consumers are written against.
 
 - Consumers must never perform an unkeyed side effect (e.g. "append to file")
   before ack — reviews check for this.
+- "Row exists" is never sufficient grounds to ack: a consumer that commits a row
+  and then does more work must be able to resume from that row's state, or the
+  contract degrades from at-least-once to at-most-once for exactly the crash
+  window it was meant to cover.
 - Duplicate LLM calls are prevented by the state machine, protecting the cost
   budget as well as correctness.
 - Redelivery storms show up as `duplicate ack` metrics rather than corrupt

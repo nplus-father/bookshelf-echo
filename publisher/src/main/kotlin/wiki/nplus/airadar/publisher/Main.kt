@@ -16,15 +16,15 @@ import java.time.ZoneOffset
 private val log = LoggerFactory.getLogger("publisher")
 
 /**
- * M1 scope: regenerate the daily markdown into CONTENT_DIR on every digested
- * item. Git commit/push of the site repo (ADR-005) lands with the site repo
- * itself; enable with PUBLISH_GIT=true once CONTENT_DIR is a git checkout.
+ * Regenerates the daily and weekly markdown into CONTENT_DIR on every digested
+ * item. Delivery to the site repo (ADR-005) is NOT done here: the site-publisher
+ * compose sidecar owns the git commit/push, which keeps this image git-free.
+ * CONTENT_DIR is therefore a plain directory, never a checkout.
  */
 fun main() = wiki.nplus.airadar.common.App.main("publisher") {
     val registry = wiki.nplus.airadar.common.Metrics.start("publisher", 9104)
     val repo = ItemRepository(Db.dataSource("publisher"))
     val contentDir = Path.of(Config.str("CONTENT_DIR", "out/content"))
-    val publishGit = Config.bool("PUBLISH_GIT", false)
     val connection = Rabbit.connect("publisher")
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)
@@ -44,7 +44,7 @@ fun main() = wiki.nplus.airadar.common.App.main("publisher") {
         val itemId = StageMessage.decode(body).itemId
         val item = repo.findItem(itemId) ?: error("item $itemId not found")
 
-        val day = LocalDate.ofInstant(item.receivedAt.toInstant(), ZoneOffset.UTC)
+        val day = pageDay(item)
         val items = repo.digestsForDay(day)
         val target = contentDir.resolve("daily/$day.md")
         Files.createDirectories(target.parent)
@@ -60,26 +60,27 @@ fun main() = wiki.nplus.airadar.common.App.main("publisher") {
         Files.createDirectories(weeklyTarget.parent)
         Files.writeString(weeklyTarget, DigestRenderer.renderWeekly(weekStart, isoWeekLabel, weekItems))
 
-        val commit = if (publishGit) gitCommitAndPush(contentDir, day) else null
         repo.transition(itemId, ItemState.DIGESTED, ItemState.PUBLISHED)
-        repo.recordPublish("DAILY", target.toString(), commit, items.size, "SUCCESS")
-        log.info("published {} ({} items{}) + weekly {}", target, items.size, commit?.let { ", commit $it" } ?: "", isoWeekLabel)
+        // git_commit stays null: the sidecar commits, so the hash is not known here.
+        repo.recordPublish("DAILY", target.toString(), null, items.size, "SUCCESS")
+        log.info("published {} ({} items) + weekly {}", target, items.size, isoWeekLabel)
     }
 }
 
-private fun gitCommitAndPush(contentDir: Path, day: LocalDate): String? {
-    fun run(vararg cmd: String): Pair<Int, String> {
-        val p = ProcessBuilder(*cmd).directory(contentDir.toFile()).redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText()
-        return p.waitFor() to out.trim()
-    }
-    run("git", "add", "-A")
-    val (commitCode, _) = run("git", "commit", "-m", "digest: $day")
-    if (commitCode != 0) return null // nothing new to commit
-    val (pushCode, pushOut) = run("git", "push")
-    if (pushCode != 0) {
-        // Pages/remote hiccup (deploy throttling included) → let the ladder retry.
-        throw wiki.nplus.airadar.common.RetryableFailure("git push failed: ${pushOut.take(300)}")
-    }
-    return run("git", "rev-parse", "--short", "HEAD").second
-}
+/**
+ * Which daily page an item belongs on: the UTC day its DIGEST was produced,
+ * never the day it was received.
+ *
+ * The page's contents come from `digestsForDay()`, which selects on
+ * `digests.created_at`. Keying the filename off a different clock (received_at)
+ * writes day D's digests onto whichever page the triggering item happened to
+ * arrive on, and the daily cap (ADR-007) drives those two clocks apart by
+ * design — an item can sit ENRICHED for days before it is digested. A day whose
+ * digests share a received_at day with no item would then never get its page
+ * written at all.
+ *
+ * received_at is only a fallback for the impossible case of an undigested item
+ * on publish.q.
+ */
+internal fun pageDay(item: ItemRepository.ItemRow): LocalDate =
+    LocalDate.ofInstant((item.digestedAt ?: item.receivedAt).toInstant(), ZoneOffset.UTC)

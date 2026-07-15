@@ -23,6 +23,20 @@ fun main() = wiki.nplus.airadar.common.App.main("enricher") {
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)
 
+    /**
+     * Fetch, persist, advance, hand off. Every step is idempotent (saveContent
+     * upserts, transition is conditional, the digester no-ops on a state it has
+     * already left), so this is safe to re-run on a redelivered item.
+     */
+    fun enrich(itemId: Long, envelope: ItemEnvelope) {
+        val fetched = fetcher.fetch(envelope.url)
+        repo.saveContent(itemId, fetched.level, fetched.text)
+        if (repo.transition(itemId, ItemState.RECEIVED, ItemState.ENRICHED)) {
+            Rabbit.publish(channel, "", RabbitTopology.DIGEST_QUEUE, StageMessage(itemId).encode())
+            log.info("enriched item {} ({}): {}", itemId, fetched.level, envelope.title)
+        }
+    }
+
     log.info("enricher: consuming {}", RabbitTopology.INGEST_QUEUE)
     Rabbit.consume(channel, RabbitTopology.INGEST_QUEUE, registry) { body ->
         val envelope = json.decodeFromString(ItemEnvelope.serializer(), body)
@@ -30,20 +44,21 @@ fun main() = wiki.nplus.airadar.common.App.main("enricher") {
         val hash = UrlCanonicalizer.contentHash(envelope.title, envelope.url)
 
         when (val outcome = repo.insertReceived(envelope, canonical, hash)) {
+            // Still RECEIVED means an earlier delivery committed the insert and
+            // died before handing off to digest.q — acking here would strand the
+            // item forever, so resume it (ADR-003: redelivery must converge).
             is InsertOutcome.AlreadySeen ->
-                log.debug("already seen: {}/{}", envelope.source, envelope.externalId)
+                if (outcome.state == ItemState.RECEIVED.name) {
+                    log.info("resuming interrupted enrichment of item {}: {}", outcome.itemId, envelope.title)
+                    enrich(outcome.itemId, envelope)
+                } else {
+                    log.debug("already seen: {}/{} ({})", envelope.source, envelope.externalId, outcome.state)
+                }
 
             is InsertOutcome.DuplicateContent ->
                 log.info("cross-source duplicate of item {}: {}", outcome.duplicateOf, envelope.title)
 
-            is InsertOutcome.New -> {
-                val fetched = fetcher.fetch(envelope.url)
-                repo.saveContent(outcome.itemId, fetched.level, fetched.text)
-                if (repo.transition(outcome.itemId, ItemState.RECEIVED, ItemState.ENRICHED)) {
-                    Rabbit.publish(channel, "", RabbitTopology.DIGEST_QUEUE, StageMessage(outcome.itemId).encode())
-                    log.info("enriched item {} ({}): {}", outcome.itemId, fetched.level, envelope.title)
-                }
-            }
+            is InsertOutcome.New -> enrich(outcome.itemId, envelope)
         }
     }
 }

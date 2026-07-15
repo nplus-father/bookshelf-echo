@@ -1,7 +1,8 @@
 #!/bin/sh
-# Sync the pipeline's markdown output into the ai-radar-site checkout and push,
-# so GitHub Actions rebuilds the public site. Runs as a compose sidecar; keeps
-# the publisher itself unchanged (no git needed in the JRE image).
+# Sync the pipeline's output — digest markdown + the metrics snapshot — into the
+# ai-radar-site checkout and push, so GitHub Actions rebuilds the public site.
+# Runs as a compose sidecar; keeps the publisher itself unchanged (no git needed
+# in the JRE image).
 set -eu
 
 git config --global --add safe.directory /repo
@@ -10,7 +11,7 @@ git config --global user.email "bot@nplus.wiki"
 
 REPO_URL="https://x-access-token:${SITE_GIT_TOKEN}@github.com/nplus-father/ai-radar-site.git"
 INTERVAL="${SYNC_INTERVAL_SECONDS:-300}"
-echo "site-publisher: syncing /src -> /repo/content every ${INTERVAL}s"
+echo "site-publisher: syncing /src -> /repo/{content,public} every ${INTERVAL}s"
 
 while true; do
   cd /repo
@@ -24,9 +25,13 @@ while true; do
     sleep "$INTERVAL"
     continue
   fi
-  mkdir -p /repo/content/daily /repo/content/weekly
+  mkdir -p /repo/content/daily /repo/content/weekly /repo/public/data/metrics
   cp -r /src/daily/. /repo/content/daily/ 2>/dev/null || true
   cp -r /src/weekly/. /repo/content/weekly/ 2>/dev/null || true
+  # metrics snapshot 走 public/ 而非 content/：content/ 只被 Astro 的 markdown
+  # collection glob 掃（*.md），JSON 放進去不會被輸出；public/ 會原樣複製進 dist/，
+  # 這樣 dashboard 才 fetch 得到 /data/metrics/latest.json。
+  cp -r /src/data/metrics/. /repo/public/data/metrics/ 2>/dev/null || true
   git add -A
   if ! git diff --cached --quiet; then
     git commit -q -m "content: auto-publish $(date -u +%FT%TZ)"

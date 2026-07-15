@@ -18,12 +18,14 @@ producers (hn, arxiv, gh-trending, blogs, reddit — each on its own cadence)
     │  publish ItemEnvelope, rk = item.<source>
     ▼
 RabbitMQ 4.x ── ingest.q ─▶ enricher ── digest.q ─▶ digester ── publish.q ─▶ publisher
-    │                        dedup +                 Claude API               markdown +
-    │                        full text               (batched,                metrics JSON
-    │                        → Postgres              budget-gated)            → git push
-    │
-    ├── retry.{30s,5m,1h}.q   (TTL + DLX ladder, no consumers — ADR-004)
-    └── dlq.q                 (+ replay CLI)
+    │                        dedup +                 Gemini API               markdown +
+    │                        full text               (per item,               metrics JSON
+    │                        → Postgres              budget-gated)            → CONTENT_DIR
+    │                                                                              │
+    ├── retry.{30s,5m,1h}.q   (TTL + DLX ladder, no consumers — ADR-004)           ▼
+    └── dlq.q                 (+ replay CLI)                              site-publisher
+                                                                          (sidecar, git)
+                                                                                   │
                                                      site repo ─▶ GitHub Actions ─▶ Pages
 ```
 
@@ -41,9 +43,16 @@ statically built site.
 | `common`     | Wire contract (`ItemEnvelope`), broker topology, URL canonicalizer |
 | `producers`  | Source pollers on independent cadences (coroutine scheduler)       |
 | `enricher`   | Dedup (two layers) + full-text fetch                               |
-| `digester`   | Batched LLM digestion, cost circuit breaker                        |
-| `publisher`  | Renders digests + metrics snapshots, commits to the site repo      |
-| `ops`        | DLQ triage CLI: `dlq list / replay / purge` (see runbooks)         |
+| `digester`   | LLM digestion (daily cap), cost circuit breaker                    |
+| `publisher`  | Renders digests + metrics snapshots into `CONTENT_DIR`             |
+| `ops`        | CLI: `dlq list / replay / purge`, `republish <day>` (see runbooks)  |
+
+Delivery to the site repo is the `site-publisher` compose sidecar (`alpine/git`
+running [`config/site-publish.sh`](config/site-publish.sh)), not the publisher:
+it rebases onto `origin/main`, copies the markdown into `content/` and the
+metrics snapshot into `public/`, and pushes. The snapshot lands at
+`/data/metrics/latest.json` on the site, where the dashboard page renders it —
+that file is the dashboard's only data source (ADR-005: no runtime backend).
 
 ## Running
 
@@ -59,6 +68,6 @@ docker compose up -d         # rabbitmq + postgres, migrations via flyway
 |-----------|--------------------------------------------------------------|-------|
 | M0        | Skeleton, compose stack, schema, ADRs 001–003                | done  |
 | M1        | First producer (`hn`) through the full pipeline, daily digest | done  |
-| M2        | DLQ replay CLI (`ops`), Prometheus metrics, snapshot exporter, systemd units, runbooks | done (dashboard page lands with the site repo) |
+| M2        | DLQ replay CLI (`ops`), Prometheus metrics, snapshot exporter, systemd units, runbooks, dashboard page | done  |
 | M3        | arXiv/GitHub-trending/blogs producers (reddit stub: needs OAuth), per-feed caps, weekly rollup v1 | done (Gemini Batch API deferred) |
 | M4        | SLO doc, runbooks, 30-day live data, tech write-up            | —     |
