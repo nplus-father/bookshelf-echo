@@ -75,7 +75,8 @@ Decisions taken:
    and any value fitted here would be fitted to noise and die with the next
    batch of books. `MATCH_NO_RESONANCE_DISTANCE` stays at 1.10, demoted to a
    coarse trash filter.
-2. **The real gate is an LLM relevance judge** (`EssayistJob`, cheap tier):
+2. **The real gate is an LLM relevance judge** (`EssayistJob`, own cheap tier
+   `JUDGE_MODEL` — it must not inherit `GEMINI_MODEL`, which prod sets to pro):
    after the curator picks and before the essayist spends, each candidate gets
    a verdict on whether the passages genuinely frame the news. At most
    `ESSAY_JUDGE_MAX_CANDIDATES` (3) verdicts/day, cents in cost. Nothing

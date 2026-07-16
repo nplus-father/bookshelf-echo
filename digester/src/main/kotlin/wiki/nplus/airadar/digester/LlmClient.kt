@@ -68,6 +68,22 @@ interface LlmClient {
                 outputUsdPerMTok = Config.double("ESSAY_OUTPUT_USD_PER_MTOK", 10.00),
             )
         }
+
+        /**
+         * The judge has its own tier rather than reusing the digest client:
+         * GEMINI_MODEL is a deployment's choice for digest quality (prod runs
+         * it on pro), but the judge is a cheap yes/no call — it must not
+         * silently inherit a premium model, or the rates it books into the
+         * ledger.
+         */
+        fun judgeFromEnv(http: HttpClient): LlmClient = gemini(http) {
+            GeminiClient(
+                it,
+                model = Config.str("JUDGE_MODEL", "gemini-2.5-flash"),
+                inputUsdPerMTok = Config.double("JUDGE_INPUT_USD_PER_MTOK", 0.30),
+                outputUsdPerMTok = Config.double("JUDGE_OUTPUT_USD_PER_MTOK", 2.50),
+            )
+        }
     }
 }
 
