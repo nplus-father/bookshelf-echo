@@ -34,4 +34,7 @@ enum class ItemState {
 
     /** Terminal: nearest book too far — no LLM money is ever spent on it. */
     NO_RESONANCE,
+
+    /** Terminal: aged past the freshness cutoff before it reached the daily cap. */
+    STALE,
 }

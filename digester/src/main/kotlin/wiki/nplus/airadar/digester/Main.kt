@@ -20,6 +20,7 @@ fun main() = wiki.nplus.airadar.common.App.main("digester") {
     val llm = LlmClient.fromEnv(http)
     val dailyBudgetUsd = Config.double("DAILY_LLM_BUDGET_USD", 0.50)
     val dailyDigestLimit = Config.int("DAILY_DIGEST_LIMIT", 10) // high-value items to digest per UTC day; 0 = unlimited
+    val maxAgeDays = Config.long("MATCH_MAX_AGE_DAYS", 3) // news older than this is dropped STALE before spend; 0 = off
     val connection = Rabbit.connect("digester")
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)
@@ -61,6 +62,23 @@ fun main() = wiki.nplus.airadar.common.App.main("digester") {
         if (item.state != ItemState.MATCHED.name) {
             log.info("item {} in state {}, not MATCHED — no-op", itemId, item.state)
             return@consume
+        }
+
+        // Freshness cutoff (V5): the daily cap is FIFO, so a backlog of old
+        // items would starve fresh ones and we'd write commentary off week-old
+        // news. Drop anything past the cutoff to STALE, terminal, at zero cost —
+        // checked BEFORE the cap so stale items drain out of the retry cycle
+        // instead of re-parking and blocking the queue behind them. Clock is
+        // the news's own date, received_at only as a fallback.
+        if (maxAgeDays > 0) {
+            val reference = (item.publishedAt ?: item.receivedAt).toInstant()
+            val ageDays = java.time.Duration.between(reference, java.time.Instant.now()).toDays()
+            if (ageDays > maxAgeDays) {
+                if (repo.transition(itemId, ItemState.MATCHED, ItemState.STALE)) {
+                    log.info("item {} STALE ({} days old): {}", itemId, ageDays, item.title)
+                }
+                return@consume
+            }
         }
 
         // Daily selection cap: digest at most N items/day so the spend goes to a

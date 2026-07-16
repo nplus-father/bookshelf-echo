@@ -130,12 +130,14 @@ class ItemRepository(private val ds: DataSource) {
         val extractedText: String?,
         /** When the digest was produced; null until the item reaches DIGESTED. */
         val digestedAt: OffsetDateTime?,
+        /** Source-reported publication time; null/unparsable for some feeds. */
+        val publishedAt: OffsetDateTime?,
     )
 
     fun findItem(itemId: Long): ItemRow? = ds.connection.use { c ->
         c.prepareStatement(
             """
-            SELECT i.id, i.source, i.url, i.title, i.state, i.received_at, ic.extracted_text, d.created_at
+            SELECT i.id, i.source, i.url, i.title, i.state, i.received_at, ic.extracted_text, d.created_at, i.published_at
             FROM items i
             LEFT JOIN item_contents ic ON ic.item_id = i.id
             LEFT JOIN digests d ON d.item_id = i.id
@@ -612,6 +614,7 @@ class ItemRepository(private val ds: DataSource) {
         receivedAt = getObject(6, OffsetDateTime::class.java),
         extractedText = getString(7),
         digestedAt = getObject(8, OffsetDateTime::class.java),
+        publishedAt = getObject(9, OffsetDateTime::class.java),
     )
 }
 

@@ -17,6 +17,7 @@ class PageDayTest {
         receivedAt = OffsetDateTime.parse(receivedAt),
         extractedText = null,
         digestedAt = digestedAt?.let(OffsetDateTime::parse),
+        publishedAt = null,
     )
 
     @Test
