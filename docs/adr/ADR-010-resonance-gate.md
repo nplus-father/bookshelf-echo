@@ -52,3 +52,40 @@ thresholds.
 - Migration: items already ENRICHED keep their parked digest.q messages; the
   digester no-ops them (state guard is now MATCHED) and `ops redrive --apply`
   re-routes ENRICHED → match.q.
+
+## Amendment (2026-07-16, same day): the gate is a trash filter, not the gatekeeper
+
+The first 281 live matches falsified the spike's central assumption. Absolute
+cosine distance does **not** measure "does my bookshelf have something to say
+about this" — it measures how dense the library is around that topic. Evidence
+(full analysis: book-library-hub `docs/news-echo-spike-report.md`):
+
+- Live queries (title + 1500 chars) sit far lower than the spike's short
+  queries: median 0.89, so the 1.10 threshold rejected only 2.5%.
+- The *strongest* resonances were gh-trending AI-handbook slop (0.739–0.781),
+  beating every real news item — 1405 books with saturated AI coverage put
+  noise vectors in the middle of the embedding space, near everything.
+- A 30-item hand-labelled sample (6 genuine, 24 coincidence) showed neither
+  distance (0.884 vs 0.887) nor top1–top2 margin (0.022 vs 0.017) separates
+  the two at all.
+
+Decisions taken:
+
+1. **Do not tune the threshold.** No cutoff separates real from coincidence,
+   and any value fitted here would be fitted to noise and die with the next
+   batch of books. `MATCH_NO_RESONANCE_DISTANCE` stays at 1.10, demoted to a
+   coarse trash filter.
+2. **The real gate is an LLM relevance judge** (`EssayistJob`, cheap tier):
+   after the curator picks and before the essayist spends, each candidate gets
+   a verdict on whether the passages genuinely frame the news. At most
+   `ESSAY_JUDGE_MAX_CANDIDATES` (3) verdicts/day, cents in cost. Nothing
+   survives → no essay that day, which was always a legal outcome. Judged-down
+   picks are consumed, so a dead pairing is never retried.
+3. **Only labelled data may justify a new automatic signal.** The spike's 1.10
+   came from 5 hand-picked cases; the margin hypothesis died the moment it met
+   30 labels. Any future signal (chapter-level distance, multi-book voting, a
+   reranker) gets the same 30-label test first.
+
+This trades a cheap-but-useless gate for a slightly-costlier-but-effective one.
+The failure mode it prevents is not overspending: it is publishing an essay
+that earnestly argues a resonance that does not exist.
