@@ -3,30 +3,72 @@
 Snapshot 2026-07-17. Ordered by priority. Cross-repo facts live in Claude's
 project memory (`news-echo-status`); this file is the human-readable backlog.
 
-## P0 — Diagnose why no essay ever publishes (the original product question)
+## P0 — DIAGNOSED (2026-07-18): curator & essayist pick from different pools
 
-The design faithfully implements the intended 4-step vision — valuable channels
-→ filter to the truly valuable → resonate against the book library → deep
-book-informed essay — but the site's **書櫃評析 section is empty**: no essay has
-ever been published. Before optimizing signal quality, find out which case
-we're in:
+**Verdict: case (B), a confirmed bug — not (A).** The essayist has *never* run
+the judge (0 `JUDGE`/`ESSAY` rows in `llm_usage`; only `DIGEST`×266 and
+`SELECT`×1). No essay was ever rejected — the essayist finds zero candidates
+every day and returns silently.
 
-- **(A) the LLM relevance judge rejects every candidate, every day** → the
-  system is working as designed (寧缺勿濫; world-news × a broad shelf is mostly
-  coincidence). Then P1 (theme-index) is the right lever.
-- **(B) the pipeline is stuck before the essay stage** → a bug to fix first.
+Root cause — the two stages disagree on the candidate pool:
 
-How (we have prod read access):
+- **Curator** (`selectionCandidates`, `ItemRepository.kt:496`) selects from the
+  **digest** pool ranked by `significance_score`, with `LEFT JOIN matches` —
+  resonance is *optional*. So it shortlists the day's most significant news
+  regardless of whether it resonated with any book.
+- **Essayist** (`essayCandidates`, `ItemRepository.kt:404`) reads
+  `shortlist JOIN matches` — an **INNER JOIN**, so a pick is only visible if it
+  has a `matches` row.
+
+Confirmed in prod: the single curator run (2026-07-16 21:05, 3 picks) shortlisted
+3 items that are all `state=PUBLISHED` with **`match_rows = 0`**. The essayist's
+INNER JOIN drops all three → no candidate → no judge call → no essay, forever.
+ADR-009 (curator) and ADR-010 (resonance gate) were built separately and their
+candidate pools were never reconciled.
+
+Deployment is NOT the blocker for this: the running `ai-radar-digester` image was
+built from HEAD `92ee99e` (image created 2026-07-16 08:14 UTC, ~1.5 min after
+that commit) and has been up continuously — it contains the full essayist. The
+essayist runs; it just never has a candidate.
+
+Not a secondary bug: the single `selection_runs` row is fully explained. The
+matcher+curator only went live ~2026-07-16; the curator's first run was
+2026-07-16 21:05 UTC and the next is simply still pending (runs nightly at
+`SELECT_HOUR_UTC`=21). At diagnosis time it was 2026-07-17 17:01 UTC, i.e.
+before that night's 21:00 window — nothing missed. The daemon tick has been up
+continuously since 2026-07-16 08:14 UTC.
+
+Data now confirms the pool overlap is healthy going forward: every digest from
+2026-07-17 onward has a `matches` row (10/10), because the matcher sits before
+the digester (ADR-010) so post-gate digests always carry resonance evidence.
+The 3 dead picks are pre-gate backlog (digested on/before 07-16, `match_rows=0`)
+that the curator's `LEFT JOIN` let in.
+
+Note: tonight's 21:00-UTC curator run may self-heal by accident — its window is
+"digests since the last run (07-16 21:05)", which now contains only post-gate
+(matched) items, so it could pick a consumable item and compose at 22:00 without
+any code change. The fix below is still needed to make it *robust* (a downtime
+gap that widens the window, or any future pre-gate item, would re-break it).
+
+**FIXED (2026-07-18, this branch):** option (A) — `selectionCandidates` now
+requires a `matches` row (`JOIN matches` instead of `LEFT JOIN`), so the
+shortlist only ever holds picks the essayist can consume. Verified: build +
+tests green; the new query dry-run against prod returns 7 consumable candidates
+for tonight's window. Deploy note: the fix rides this branch, so it reaches prod
+with the manual cutover (runbook §5) — or cherry-pick onto `main` to ship it
+sooner via the old auto-deploy path. Rejected alternative (B): decouple the
+essayist from a pre-existing `matches` row — bigger change, against ADR-010.
+
+How to re-check (we have prod read access):
 ```
 ssh nplus.space "docker exec -i ai-radar-postgres-1 psql -U airadar -d airadar"
 ```
-Check: is `selection_runs` firing daily? is `shortlist` being populated (and are
-picks `composed_at`)? are there judge verdicts in `llm_usage` (by `purpose`)?
-any rows in `essays` at all? are items reaching `DIGESTED`/`PUBLISHED` or piling
-in `STALE`/`NO_RESONANCE`?
 Refs: ADR-009 (curator/shortlist), ADR-010 + amendment (resonance gate, judge).
 
-## P1 — Theme-index experiment (only if P0 = A)
+## P1 — Theme-index experiment (DEFERRED: P0 turned out to be B, not A)
+
+P0 was case (B), so this is no longer the immediate lever — fix the pool bug
+first and let a real essay flow before re-testing discrimination. Kept for later.
 
 Test whether an isolated theme vector discriminates genuine vs coincidence.
 Everything is staged in `docs/experiments/theme-index/` (frozen 30-item news
