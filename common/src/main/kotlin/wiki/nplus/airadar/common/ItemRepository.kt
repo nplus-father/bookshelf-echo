@@ -482,7 +482,7 @@ class ItemRepository(private val ds: DataSource) {
 
     data class SelectionCandidate(
         val item: DigestedItem,
-        /** Resonance signal from the matcher (ADR-010); null for pre-gate items. */
+        /** Resonance signal from the matcher (ADR-010); always present — pre-gate items are excluded. */
         val topBookDistance: Double?,
         val booksJson: String?,
     )
@@ -490,8 +490,11 @@ class ItemRepository(private val ds: DataSource) {
     /**
      * Digests produced after [since] that scored at least [minScore] and are
      * not yet shortlisted — the curator's candidate set, with each item's
-     * resonance evidence attached. Ordered like the daily page so the LLM sees
-     * the strongest items first.
+     * resonance evidence attached. Resonance is REQUIRED (inner join): the
+     * essayist can only compose from picks with a matches row, so a pick
+     * without one would sit in the shortlist forever (this exact bug left the
+     * essayist with zero candidates and the site without a single essay).
+     * Ordered like the daily page so the LLM sees the strongest items first.
      */
     fun selectionCandidates(since: OffsetDateTime, minScore: Int): List<SelectionCandidate> = ds.connection.use { c ->
         c.prepareStatement(
@@ -500,8 +503,8 @@ class ItemRepository(private val ds: DataSource) {
                    m.top_book_distance, m.books
             FROM digests d
             JOIN items i ON i.id = d.item_id
+            JOIN matches m ON m.item_id = d.item_id
             LEFT JOIN shortlist s ON s.item_id = d.item_id
-            LEFT JOIN matches m ON m.item_id = d.item_id
             WHERE d.created_at > ? AND d.significance_score >= ? AND s.item_id IS NULL
             ORDER BY d.significance_score DESC, i.id
             """.trimIndent(),
