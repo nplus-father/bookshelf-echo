@@ -653,6 +653,25 @@ data class EssayResult(
     val outputTokens: Int,
 )
 
+/**
+ * The critic's verdict on an essay draft, provider-agnostic. A failed draft
+ * carries the critique back to the essayist for one revision.
+ */
+data class CritiqueResult(
+    val pass: Boolean,
+    /** Specific, actionable criticism in Traditional Chinese — the revision prompt quotes it verbatim. */
+    val critique: String,
+    val model: String,
+    val inputTokens: Int,
+    val outputTokens: Int,
+)
+
+/** A rejected draft plus the critic's reasons, fed back for the single revision round. */
+data class EssayFeedback(
+    val previousEssayMd: String,
+    val critique: String,
+)
+
 /** Structured output of the LLM digest step, provider-agnostic. */
 data class DigestResult(
     val summaryZh: String,

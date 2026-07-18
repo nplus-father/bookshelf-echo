@@ -129,4 +129,18 @@ class GeminiClientTest {
         val payload = """{"skip": false, "skip_reason": null, "title_zh": "t", "essay_md": "", "books_used": []}"""
         assertFailsWith<IllegalStateException> { client().parseEssay(essayResponse(payload), "gemini-test") }
     }
+
+    @Test
+    fun `parses a critique verdict`() {
+        val body = essayResponse("""{"pass": false, "critique": "第2項不及格：摘要拼盤，中段沒有相撞出判斷"}""")
+        val result = client().parseCritique(body, "gemini-test")
+        assertEquals(false, result.pass)
+        assertEquals("第2項不及格：摘要拼盤，中段沒有相撞出判斷", result.critique)
+    }
+
+    @Test
+    fun `critique without verdict fails fast`() {
+        val body = essayResponse("""{"critique": "只有批評沒有結論"}""")
+        assertFailsWith<IllegalStateException> { client().parseCritique(body, "gemini-test") }
+    }
 }

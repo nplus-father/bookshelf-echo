@@ -8,6 +8,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
 import wiki.nplus.airadar.common.Config
+import wiki.nplus.airadar.common.EssayFeedback
 import wiki.nplus.airadar.common.ItemRepository
 import wiki.nplus.airadar.common.LibraryClient
 import wiki.nplus.airadar.common.Rabbit
@@ -24,9 +25,10 @@ import java.time.ZoneOffset
  * the news — at most ESSAY_JUDGE_MAX_CANDIDATES verdicts per day. The first
  * survivor gets its top chapters pulled in full and ESSAY_MODEL writes the
  * book-informed commentary (one essay attempt per day); the essay model may
- * still refuse (skip). Rejected and skipped picks are consumed so the same
- * dead pairing is not retried tomorrow. Days without an essay are a legal
- * outcome (寧缺勿濫).
+ * still refuse (skip). Every draft then faces the cheap-tier critic; a fail
+ * earns one revision with the critique fed back, a second fail forfeits the
+ * day. Rejected and skipped picks are consumed so the same dead pairing is
+ * not retried tomorrow. Days without an essay are a legal outcome (寧缺勿濫).
  *
  * Runs in the digester process for the same reason as the curator (ADR-009):
  * one process spends all LLM money.
@@ -35,6 +37,7 @@ class EssayistJob(
     private val repo: ItemRepository,
     private val essayist: LlmClient,
     private val judge: LlmClient,
+    private val critic: LlmClient,
     private val library: LibraryClient,
     private val channel: Channel,
     private val registry: MeterRegistry,
@@ -87,9 +90,8 @@ class EssayistJob(
         }
 
         val chapters = topChapters(candidate.passagesJson)
-        val result = essayist.essay(candidate, chapters)
-        val usd = essayist.cost(result.inputTokens, result.outputTokens)
-        repo.recordUsage(candidate.itemId, "ESSAY", result.model, result.inputTokens, result.outputTokens, usd)
+        var result = essayist.essay(candidate, chapters)
+        repo.recordUsage(candidate.itemId, "ESSAY", result.model, result.inputTokens, result.outputTokens, essayist.cost(result.inputTokens, result.outputTokens))
 
         if (result.skip) {
             // Consume the pick: retrying the same pairing tomorrow would burn
@@ -98,6 +100,35 @@ class EssayistJob(
             outcome("skipped").increment()
             log.info("essay {}: model declined item {} ({}): {}", day, candidate.itemId, candidate.title, result.skipReason)
             return
+        }
+
+        // Critic gate: every draft is reviewed before publishing; a fail earns
+        // exactly one revision round (the critique goes back verbatim), a
+        // second fail forfeits the day. The failure mode this catches is a
+        // draft that is fluent but hollow — summary sandwich, fake quotes,
+        // forced pairing — which the essayist's own honesty clause misses
+        // because it judges the pairing, not its own prose.
+        val verdict = critic.critique(candidate, chapters, result.essayMd ?: error("essay without body for item ${candidate.itemId}"))
+        repo.recordUsage(candidate.itemId, "CRITIC", verdict.model, verdict.inputTokens, verdict.outputTokens, critic.cost(verdict.inputTokens, verdict.outputTokens))
+        if (!verdict.pass) {
+            log.info("essay {}: critic rejected draft for item {} ({}): {}", day, candidate.itemId, candidate.title, verdict.critique)
+            val revised = essayist.essay(candidate, chapters, EssayFeedback(result.essayMd!!, verdict.critique))
+            repo.recordUsage(candidate.itemId, "ESSAY_REVISE", revised.model, revised.inputTokens, revised.outputTokens, essayist.cost(revised.inputTokens, revised.outputTokens))
+            if (revised.skip) {
+                repo.markComposed(candidate.itemId)
+                outcome("skipped").increment()
+                log.info("essay {}: model declined on revision for item {} ({}): {}", day, candidate.itemId, candidate.title, revised.skipReason)
+                return
+            }
+            val second = critic.critique(candidate, chapters, revised.essayMd ?: error("revised essay without body for item ${candidate.itemId}"))
+            repo.recordUsage(candidate.itemId, "CRITIC", second.model, second.inputTokens, second.outputTokens, critic.cost(second.inputTokens, second.outputTokens))
+            if (!second.pass) {
+                repo.markComposed(candidate.itemId)
+                outcome("critic_rejected").increment()
+                log.info("essay {}: revision still rejected for item {} ({}) — no essay today (寧缺勿濫): {}", day, candidate.itemId, candidate.title, second.critique)
+                return
+            }
+            result = revised
         }
 
         repo.saveEssay(

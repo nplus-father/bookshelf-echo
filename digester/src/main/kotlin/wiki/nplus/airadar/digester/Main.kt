@@ -37,6 +37,7 @@ fun main() = wiki.nplus.airadar.common.App.main("digester") {
         repo,
         LlmClient.essayistFromEnv(http),
         LlmClient.judgeFromEnv(http),
+        LlmClient.criticFromEnv(http),
         wiki.nplus.airadar.common.LibraryClient.fromEnv(http),
         connection.createChannel(),
         registry,

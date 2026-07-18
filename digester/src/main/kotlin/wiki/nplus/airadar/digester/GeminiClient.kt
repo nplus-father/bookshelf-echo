@@ -13,6 +13,8 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import wiki.nplus.airadar.common.Config
+import wiki.nplus.airadar.common.CritiqueResult
+import wiki.nplus.airadar.common.EssayFeedback
 import wiki.nplus.airadar.common.DigestResult
 import wiki.nplus.airadar.common.EssayResult
 import wiki.nplus.airadar.common.ItemRepository
@@ -44,11 +46,22 @@ class GeminiClient(
     override fun select(candidates: List<ItemRepository.SelectionCandidate>, maxPicks: Int): SelectResult =
         parseSelection(generate(buildSelectPrompt(candidates, maxPicks)), model)
 
-    override fun essay(candidate: ItemRepository.EssayCandidate, chapters: List<LlmClient.ChapterExcerpt>): EssayResult =
-        parseEssay(generate(buildEssayPrompt(candidate, chapters)), model)
+    override fun essay(
+        candidate: ItemRepository.EssayCandidate,
+        chapters: List<LlmClient.ChapterExcerpt>,
+        feedback: EssayFeedback?,
+    ): EssayResult =
+        parseEssay(generate(buildEssayPrompt(candidate, chapters, feedback)), model)
 
     override fun judge(candidate: ItemRepository.EssayCandidate): JudgeResult =
         parseJudge(generate(buildJudgePrompt(candidate)), model)
+
+    override fun critique(
+        candidate: ItemRepository.EssayCandidate,
+        chapters: List<LlmClient.ChapterExcerpt>,
+        essayMd: String,
+    ): CritiqueResult =
+        parseCritique(generate(buildCritiquePrompt(candidate, chapters, essayMd)), model)
 
     private fun generate(prompt: String): String {
         val body = buildJsonObject {
@@ -161,10 +174,29 @@ class GeminiClient(
         """.trimIndent()
     }
 
-    private fun buildEssayPrompt(candidate: ItemRepository.EssayCandidate, chapters: List<LlmClient.ChapterExcerpt>): String {
+    private fun buildEssayPrompt(
+        candidate: ItemRepository.EssayCandidate,
+        chapters: List<LlmClient.ChapterExcerpt>,
+        feedback: EssayFeedback? = null,
+    ): String {
         val chapterBlocks = chapters.joinToString("\n\n") { ch ->
             "### 《${ch.bookTitle}》｜${ch.chapterTitle}（chapter_id: ${ch.chapterId}）\n${ch.content.take(6000)}"
         }
+        val revisionBlock = feedback?.let {
+            """
+
+            【重寫要求】你先前的初稿沒有通過品質審查。這是初稿：
+
+            ${it.previousEssayMd}
+
+            這是審查者的具體批評：
+
+            ${it.critique}
+
+            請針對批評重寫。逐點回應批評，但不要在文中提及審查或重寫這件事。
+            如果批評指出的問題是「這個配對本身撐不起評析」，誠實面對——skip=true。
+            """.trimIndent()
+        } ?: ""
         return """
             你是一個每日評論專欄的作者。你的獨特之處：用「書櫃」回應時事——從自己讀過的書中
             找出真正能照亮這則新聞的框架，寫一篇有洞見的繁體中文評析。新聞為引、書為體。
@@ -189,7 +221,7 @@ class GeminiClient(
             - 長度約 800-1500 字，Markdown 格式，段落分明；不用列參考書目（系統會加）。
             - 誠實原則：如果這些段落撐不起一篇評析（只是字面巧合、概念不合），
               請放棄——skip=true 並說明原因。寧缺勿濫。
-
+            $revisionBlock
             只回傳 JSON 物件（不要 markdown fence）：
             {
               "skip": false,
@@ -259,6 +291,57 @@ class GeminiClient(
         只回傳 JSON 物件（不要 markdown fence）：
         {"related": true 或 false, "reason": "一句話說明（繁體中文）"}
     """.trimIndent()
+
+    private fun buildCritiquePrompt(
+        candidate: ItemRepository.EssayCandidate,
+        chapters: List<LlmClient.ChapterExcerpt>,
+        essayMd: String,
+    ): String {
+        val chapterBlocks = chapters.joinToString("\n\n") { ch ->
+            "### 《${ch.bookTitle}》｜${ch.chapterTitle}\n${ch.content.take(6000)}"
+        }
+        return """
+            你是一個評論專欄的總編輯，審一篇「用書櫃回應時事」的評析草稿。
+            這個專欄一天只發一篇，發一篇硬拗的比空手一天糟糕得多——嚴格把關。
+
+            這篇評析回應的新聞：
+            - 標題：${candidate.title}
+            ${candidate.extractedText?.let { "- 內文（節錄）：\n${it.take(3000)}" } ?: "- 內文：（無全文）"}
+
+            作者手上的書籍材料（引文必須出自這裡）：
+
+            $chapterBlocks
+
+            評析草稿：
+
+            $essayMd
+
+            檢核表（任何一項不及格就整篇不過）：
+            1. 引文真實：文中的書籍引文與轉述，是否真出自上面的材料？杜撰或明顯扭曲＝不過。
+            2. 相撞而非拼盤：是「書的框架 × 新聞實質」碰撞出作者自己的判斷，
+               還是新聞摘要＋書摘各寫一段、中間一句話硬接？拼盤＝不過。
+            3. 非顯而易見：書中框架有沒有讓讀者看見「不讀這本書就看不見」的層面？
+               只說出常識或新聞本身已明說的事＝不過。
+            4. 不硬拗：論證是否誠實？把字面巧合說成深刻關聯、結論遠超材料所能支撐＝不過。
+            5. 完整可讀：段落分明、論證連貫、繁體中文、長度大致在 800-1500 字。
+
+            只回傳 JSON 物件（不要 markdown fence）：
+            {"pass": true 或 false, "critique": "具體、可執行的批評（繁體中文）。不過時：逐點指出哪一項為何不及格、該怎麼改；通過時：一句話說明為何及格。"}
+        """.trimIndent()
+    }
+
+    internal fun parseCritique(body: String, model: String): CritiqueResult {
+        val (payload, inputTokens, outputTokens) = extractPayload(body)
+        val verdict = Json.parseToJsonElement(payload).jsonObject
+        return CritiqueResult(
+            pass = verdict["pass"]?.jsonPrimitive?.content?.toBooleanStrictOrNull()
+                ?: error("critique JSON missing pass"),
+            critique = verdict.required("critique"),
+            model = model,
+            inputTokens = inputTokens,
+            outputTokens = outputTokens,
+        )
+    }
 
     internal fun parseJudge(body: String, model: String): JudgeResult {
         val (payload, inputTokens, outputTokens) = extractPayload(body)

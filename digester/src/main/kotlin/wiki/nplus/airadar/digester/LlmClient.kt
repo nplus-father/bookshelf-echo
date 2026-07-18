@@ -1,6 +1,8 @@
 package wiki.nplus.airadar.digester
 
 import wiki.nplus.airadar.common.Config
+import wiki.nplus.airadar.common.CritiqueResult
+import wiki.nplus.airadar.common.EssayFeedback
 import wiki.nplus.airadar.common.DigestResult
 import wiki.nplus.airadar.common.EssayResult
 import wiki.nplus.airadar.common.ItemRepository
@@ -26,8 +28,28 @@ interface LlmClient {
     /** Relative ranking: pick at most [maxPicks] of [candidates] worth a deep commentary. */
     fun select(candidates: List<ItemRepository.SelectionCandidate>, maxPicks: Int): SelectResult
 
-    /** The daily essay: news + library passages → book-informed commentary, or a refusal. */
-    fun essay(candidate: ItemRepository.EssayCandidate, chapters: List<ChapterExcerpt>): EssayResult
+    /**
+     * The daily essay: news + library passages → book-informed commentary, or a
+     * refusal. [feedback] carries a rejected draft plus the critic's reasons
+     * for the single revision round.
+     */
+    fun essay(
+        candidate: ItemRepository.EssayCandidate,
+        chapters: List<ChapterExcerpt>,
+        feedback: EssayFeedback? = null,
+    ): EssayResult
+
+    /**
+     * The quality critic: does the draft actually collide book and news into a
+     * judgment, with real quotes — or is it a summary sandwich / a forced
+     * pairing? Runs on the cheap tier after every draft; a fail triggers at
+     * most one revision, then the day is forfeited (寧缺勿濫).
+     */
+    fun critique(
+        candidate: ItemRepository.EssayCandidate,
+        chapters: List<ChapterExcerpt>,
+        essayMd: String,
+    ): CritiqueResult
 
     /**
      * The relevance judge: is the retrieved book evidence a genuine frame for
@@ -84,6 +106,16 @@ interface LlmClient {
                 outputUsdPerMTok = Config.double("JUDGE_OUTPUT_USD_PER_MTOK", 2.50),
             )
         }
+
+        /** The critic reads a full draft but answers briefly — same cheap-tier reasoning as the judge. */
+        fun criticFromEnv(http: HttpClient): LlmClient = gemini(http) {
+            GeminiClient(
+                it,
+                model = Config.str("CRITIC_MODEL", "gemini-2.5-flash"),
+                inputUsdPerMTok = Config.double("CRITIC_INPUT_USD_PER_MTOK", 0.30),
+                outputUsdPerMTok = Config.double("CRITIC_OUTPUT_USD_PER_MTOK", 2.50),
+            )
+        }
     }
 }
 
@@ -117,12 +149,28 @@ class FakeLlmClient : LlmClient {
         outputTokens = 0,
     )
 
-    override fun essay(candidate: ItemRepository.EssayCandidate, chapters: List<LlmClient.ChapterExcerpt>): EssayResult = EssayResult(
+    override fun essay(
+        candidate: ItemRepository.EssayCandidate,
+        chapters: List<LlmClient.ChapterExcerpt>,
+        feedback: EssayFeedback?,
+    ): EssayResult = EssayResult(
         skip = false,
         skipReason = null,
         titleZh = "（測試評析）${candidate.title}",
-        essayMd = "（測試評析內文）引用：${chapters.joinToString { it.chapterTitle }}",
+        essayMd = "（測試評析內文${feedback?.let { "，重寫" } ?: ""}）引用：${chapters.joinToString { it.chapterTitle }}",
         booksJson = """[{"book_id":"fake-book","book_title":"假書","chapter_id":"fake-book:c1","chapter_title":"假章"}]""",
+        model = model,
+        inputTokens = 0,
+        outputTokens = 0,
+    )
+
+    override fun critique(
+        candidate: ItemRepository.EssayCandidate,
+        chapters: List<LlmClient.ChapterExcerpt>,
+        essayMd: String,
+    ): CritiqueResult = CritiqueResult(
+        pass = true,
+        critique = "（測試講評）",
         model = model,
         inputTokens = 0,
         outputTokens = 0,
