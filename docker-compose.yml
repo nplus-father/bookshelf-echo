@@ -65,7 +65,7 @@ services:
     logging: *default-logging
     command: migrate
     environment:
-      FLYWAY_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-airadar}
+      FLYWAY_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-airadar}
       FLYWAY_USER: ${POSTGRES_USER:-airadar}
       FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
     volumes:
@@ -90,7 +90,7 @@ services:
     container_name: bookshelf-echo-producers
     env_file: [.env]
     environment: &app-env
-      DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-airadar}
+      DATABASE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-airadar}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       RABBITMQ_MGMT_PORT: "15672"
@@ -201,7 +201,7 @@ services:
       # 刻意不用 DATA_SOURCE_NAME 的單一 URL 形式:密碼含 "/" 之類的字元會讓
       # URL 解析失敗,而 exporter 的錯誤訊息會把完整 DSN（含密碼）印進 log。
       # 拆成三個變數就沒有編碼問題,也不會有人需要在 compose 裡手動 urlencode。
-      DATA_SOURCE_URI: "postgres:5432/${POSTGRES_DB:-airadar}?sslmode=disable"
+      DATA_SOURCE_URI: "${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-airadar}?sslmode=disable"
       DATA_SOURCE_USER: "${POSTGRES_USER:-airadar}"
       DATA_SOURCE_PASS: "${POSTGRES_PASSWORD:?set in .env}"
     depends_on:
