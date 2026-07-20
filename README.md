@@ -40,7 +40,9 @@ spend*. Items whose nearest book is too far park in `NO_RESONANCE` at zero
 LLM cost; the rest carry their matched books/passages forward. The daily
 essay (`essays/`) pairs the strongest-resonance pick with at most two books —
 the essayist may decline when the material is only a keyword coincidence
-(寧缺勿濫: days without an essay are expected).
+(寧缺勿濫: days without an essay are expected). Every draft's quotes are checked
+verbatim against the source chapters before it can publish; that check is a
+string comparison, not another model call (ADR-011).
 
 A second judgment tier sits on top (M5, ADR-009): once per UTC day the
 digester's **curator** re-ranks the day's digests relative to each other with a

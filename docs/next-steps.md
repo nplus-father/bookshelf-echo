@@ -1,69 +1,59 @@
 # Next steps
 
-Snapshot 2026-07-17. Ordered by priority. Cross-repo facts live in Claude's
+Snapshot 2026-07-20. Ordered by priority. Cross-repo facts live in Claude's
 project memory (`news-echo-status`); this file is the human-readable backlog.
 
-## P0 — DIAGNOSED (2026-07-18): curator & essayist pick from different pools
-
-**Verdict: case (B), a confirmed bug — not (A).** The essayist has *never* run
-the judge (0 `JUDGE`/`ESSAY` rows in `llm_usage`; only `DIGEST`×266 and
-`SELECT`×1). No essay was ever rejected — the essayist finds zero candidates
-every day and returns silently.
-
-Root cause — the two stages disagree on the candidate pool:
-
-- **Curator** (`selectionCandidates`, `ItemRepository.kt:496`) selects from the
-  **digest** pool ranked by `significance_score`, with `LEFT JOIN matches` —
-  resonance is *optional*. So it shortlists the day's most significant news
-  regardless of whether it resonated with any book.
-- **Essayist** (`essayCandidates`, `ItemRepository.kt:404`) reads
-  `shortlist JOIN matches` — an **INNER JOIN**, so a pick is only visible if it
-  has a `matches` row.
-
-Confirmed in prod: the single curator run (2026-07-16 21:05, 3 picks) shortlisted
-3 items that are all `state=PUBLISHED` with **`match_rows = 0`**. The essayist's
-INNER JOIN drops all three → no candidate → no judge call → no essay, forever.
-ADR-009 (curator) and ADR-010 (resonance gate) were built separately and their
-candidate pools were never reconciled.
-
-Deployment is NOT the blocker for this: the running `ai-radar-digester` image was
-built from HEAD `92ee99e` (image created 2026-07-16 08:14 UTC, ~1.5 min after
-that commit) and has been up continuously — it contains the full essayist. The
-essayist runs; it just never has a candidate.
-
-Not a secondary bug: the single `selection_runs` row is fully explained. The
-matcher+curator only went live ~2026-07-16; the curator's first run was
-2026-07-16 21:05 UTC and the next is simply still pending (runs nightly at
-`SELECT_HOUR_UTC`=21). At diagnosis time it was 2026-07-17 17:01 UTC, i.e.
-before that night's 21:00 window — nothing missed. The daemon tick has been up
-continuously since 2026-07-16 08:14 UTC.
-
-Data now confirms the pool overlap is healthy going forward: every digest from
-2026-07-17 onward has a `matches` row (10/10), because the matcher sits before
-the digester (ADR-010) so post-gate digests always carry resonance evidence.
-The 3 dead picks are pre-gate backlog (digested on/before 07-16, `match_rows=0`)
-that the curator's `LEFT JOIN` let in.
-
-Note: tonight's 21:00-UTC curator run may self-heal by accident — its window is
-"digests since the last run (07-16 21:05)", which now contains only post-gate
-(matched) items, so it could pick a consumable item and compose at 22:00 without
-any code change. The fix below is still needed to make it *robust* (a downtime
-gap that widens the window, or any future pre-gate item, would re-break it).
-
-**FIXED (2026-07-18, this branch):** option (A) — `selectionCandidates` now
-requires a `matches` row (`JOIN matches` instead of `LEFT JOIN`), so the
-shortlist only ever holds picks the essayist can consume. Verified: build +
-tests green; the new query dry-run against prod returns 7 consumable candidates
-for tonight's window. Deploy note: the fix rides this branch, so it reaches prod
-with the manual cutover (runbook §5) — or cherry-pick onto `main` to ship it
-sooner via the old auto-deploy path. Rejected alternative (B): decouple the
-essayist from a pre-existing `matches` row — bigger change, against ADR-010.
-
-How to re-check (we have prod read access):
+Prod read access:
 ```
-ssh nplus.space "docker exec -i ai-radar-postgres-1 psql -U airadar -d airadar"
+ssh nplus.space "docker exec -i bookshelf-echo-postgres-1 psql -U airadar -d airadar"
 ```
-Refs: ADR-009 (curator/shortlist), ADR-010 + amendment (resonance gate, judge).
+
+## P0 — VERIFY TONIGHT: the essay path has not produced since 2026-07-17
+
+`content/essays/` holds exactly one file, `2026-07-17.md`. Two nights produced
+nothing, for two *different* reasons, and only the first is fixed:
+
+- **07-18** — the critic gate (`58942b8`) booked `CRITIC`/`ESSAY_REVISE` into
+  `llm_usage`, purposes no migration ever added. Every run died on the check
+  constraint *after* paying for the pro-tier essay, wrote no `essays` row, and
+  so re-ran on the next five-minute tick until the budget breaker tripped.
+  **Fixed in `8499665`** — the gate is retired for a deterministic quote check
+  (ADR-011), spend is metered in one place, and the daily jobs now cap their
+  attempts. Deployed 2026-07-20 04:58 UTC.
+- **07-19** — prod was simply down. The publisher's hourly snapshot heartbeat
+  stops at 11:27 UTC and does not resume until 07-20 00:05 UTC, a window that
+  contains the 22:00 essay hour, so that night's run almost certainly never
+  happened. **Cause unknown and uninvestigated** — the last successful deploy
+  before it was 07-19 10:20 UTC and the heartbeat survived that by an hour, so
+  "the deploy broke it" does not fit. If it recurs, this is the real P0.
+
+Open items:
+
+- [ ] Tonight's 22:00-UTC run is the first real exercise of the new path
+      (judge → essay → `QuoteVerifier` → save). The new failure mode to watch
+      for is `unverified_quotes`: if the model will not quote in blockquotes, or
+      quotes loosely, the day is forfeited and the *symptom is identical* to the
+      bug just fixed. `docker logs --since 12h bookshelf-echo-digester | grep "essay 2026-07-20"`
+- [ ] Reconcile the bill and confirm the 07-18 diagnosis: `ESSAY` rows in
+      `llm_usage` for 07-18 with no matching `essays` row for that day.
+- [ ] Decide whether to backfill 07-18/07-19. `essayExistsForDay` only looks at
+      the current day, so past days are never retried; `ops republish-essay`
+      re-renders an existing essay and cannot create one. Backfilling needs a
+      new ops command. Not backfilling leaves two permanent gaps.
+- [ ] `shortlist.pendingCount` was 7 at the last snapshot while
+      `receivedLast24h` was 4 — picks are accumulating faster than news arrives.
+      See P2.
+
+Refs: ADR-009 (curator/shortlist), ADR-010 + amendment (resonance gate, judge),
+ADR-011 (why the critic gate went away).
+
+## Resolved — curator & essayist picked from different pools (2026-07-18)
+
+`selectionCandidates` used `LEFT JOIN matches` while `essayCandidates` used an
+INNER JOIN, so the curator could shortlist items the essayist was structurally
+unable to consume — the reason zero essays had ever been published. Fixed in
+`b69bf31` by requiring a `matches` row on the curator side too. ADR-009 and
+ADR-010 had been built separately and their candidate pools never reconciled.
 
 ## P1 — Theme-index experiment (DEFERRED: P0 turned out to be B, not A)
 
@@ -91,9 +81,14 @@ migration, done manually** (not a plain `git merge`). Full runbook:
       Volume migration verified — no data loss (counts only rose from live
       traffic: items 719→724, matches 447→451; digests/essays/shortlist/usage
       unchanged). All 7 `bookshelf-echo-*` containers up. See runbook §5.
-- [~] Merge `Andrewnplus/nplus-infra` (prometheus targets): merged + pushed.
-      Host `git pull` + `docker restart infra-prometheus` still pending (needs
-      andrew on host). Grafana `app=` label still to fix.
+- [~] `Andrewnplus/nplus-infra`: scrape targets, the `matcher:9105` target that
+      had been missing since the resonance gate shipped, LLM-cost-by-purpose and
+      daily-job panels, and the dashboard rename (file + title + tags; **uid
+      stays `ai-radar`** or every existing link breaks) are all merged and
+      pushed as of `b7c5e35`. Host `git pull` + `docker restart infra-prometheus
+      infra-grafana` still pending (needs andrew on host). Verify afterwards:
+      Prometheus `/targets` shows five `bookshelf-echo` targets UP, and the
+      by-purpose panel shows SELECT and ESSAY series.
 - [x] nplus-backend LINE job: env set 2026-07-18 in `nplus-infra/backend.env`
       (host-only, gitignored), `docker compose up -d backend` → healthy,
       `ai_radar_daily_push [enabled]` 08:00 schedule loaded. NOTE: backend reads

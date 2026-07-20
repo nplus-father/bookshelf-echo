@@ -13,10 +13,12 @@ import java.net.http.HttpClient
  * types; swapping providers (Gemini today — ADR-007) touches nothing outside
  * this package.
  *
- * Three tiers, three instances (ADR-009): [fromEnv] is the cheap per-item
- * digest model, [selectorFromEnv] the stronger once-a-day selection model,
- * [essayistFromEnv] the once-a-day essay model. Same interface, different
- * model + per-Mtok rates.
+ * Four tiers, four instances (ADR-009): [fromEnv] is the cheap per-item digest
+ * model, [selectorFromEnv] the stronger once-a-day selection model,
+ * [essayistFromEnv] the once-a-day essay model, [judgeFromEnv] the cheap
+ * relevance verdict that gates it (ADR-010). Same interface, different model +
+ * per-Mtok rates. Each tier is its own instance so none can silently inherit
+ * another's model — or the rates it books into the ledger.
  */
 interface LlmClient {
     val model: String
