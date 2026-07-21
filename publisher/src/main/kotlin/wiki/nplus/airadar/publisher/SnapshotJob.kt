@@ -34,16 +34,24 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
     private val mgmtPort = Config.int("RABBITMQ_MGMT_PORT", 15672)
 
     /**
-     * Must match `management.path_prefix` in config/rabbitmq/rabbitmq.conf.
+     * Must match `management.path_prefix` in config/rabbitmq/rabbitmq.conf —
+     * which, since 2026-07-21, is unset. The broker serves the management API
+     * at the plain `/api/...` again, so the default here is empty.
      *
-     * That prefix exists so nplus-infra's nginx can mount the management UI
-     * under /rabbitmq/ — but it moves the HTTP API too, so `/api/queues`
-     * becomes `/rabbitmq/api/queues`. This client kept asking for the
-     * un-prefixed path and had been getting 404 on every interval since:
-     * the catch below swallows it into a WARN, the snapshot still writes,
-     * and the dashboard renders empty queue panels. Nothing ever turned red.
+     * History worth keeping: the prefix existed only so nplus-infra's nginx
+     * could mount the UI under https://nplus.space/rabbitmq/. It moved the
+     * HTTP API along with the UI, and this client kept asking for the
+     * un-prefixed path — a 404 every interval, swallowed into a WARN, the
+     * snapshot still written, the dashboard's queue panels quietly empty.
+     * Nothing ever turned red. The UI now lives at its own subdomain
+     * (https://rabbitmq.nplus.space/), so the prefix — and that whole class
+     * of bug — is gone rather than merely fixed.
+     *
+     * The default has to be empty rather than overridden by env: [Config.str]
+     * treats a blank value as absent and falls back, so `RABBITMQ_MGMT_PATH_PREFIX=`
+     * would silently restore `/rabbitmq` and re-arm the exact bug above.
      */
-    private val mgmtPrefix = Config.str("RABBITMQ_MGMT_PATH_PREFIX", "/rabbitmq").trimEnd('/')
+    private val mgmtPrefix = Config.str("RABBITMQ_MGMT_PATH_PREFIX", "").trimEnd('/')
 
     private val auth = Base64.getEncoder().encodeToString(
         "${Config.str("RABBITMQ_USER", "airadar")}:${Config.str("RABBITMQ_PASSWORD")}".toByteArray(),
