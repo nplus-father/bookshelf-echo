@@ -15,6 +15,13 @@ echo "site-publisher: syncing /src -> /repo/{content,public} every ${INTERVAL}s"
 
 while true; do
   cd /repo
+  # 工作區殘留（上一輪 rebase --abort 沒還原乾淨、或別處手動動過）會讓 rebase
+  # 每輪都 "cannot rebase: You have unstaged changes" —— 而唯一能清掉殘留的
+  # git add -A 在下面，被失敗分支的 continue 跳過，於是永久死鎖
+  # （2026-07-21 起的停更事故，卡了三篇 essay）。/repo 是機器工作副本，
+  # 內容一律從 origin/main + /src 重建，未提交的修改沒有保留價值：先丟掉。
+  git checkout -q -- . 2>/dev/null || true
+  git clean -qfd 2>/dev/null || true
   # 先跟上 origin/main — repo 若在別處被 push 過（renovate、手動 fix），
   # 不 rebase 的 push 會 non-fast-forward 永久失敗（2026-07-12 起的停更事故）。
   if git fetch -q "$REPO_URL" main && git rebase -q FETCH_HEAD; then
