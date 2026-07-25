@@ -1,6 +1,13 @@
 # Local/host stack for bookshelf-echo. Zero-inbound posture (ADR-006): every port
 # binds to 127.0.0.1 only — the pipeline needs egress exclusively, the public
 # face is the statically built site on GitHub Pages.
+#
+# One deliberate exception (ADR-006 amendment, 2026-07-25): metrics ports also
+# bind to 172.30.0.1, the k8s-docker-bridge gateway, so the kube-prometheus-stack
+# in k3s can scrape them — k8s pods cannot reach docker container IPs, published
+# ports on 172.30.0.1 are the only route (see nplus-infra docs/k3s-migration.md).
+# That address is not public: it lives on an internal bridge, and ufw only admits
+# the pod CIDR (10.42.0.0/16). Zero-INBOUND-from-the-internet still holds.
 name: bookshelf-echo
 
 # Docker 預設的 json-file 沒有大小上限,log 只會單調成長,永遠不會自己回收。
@@ -20,6 +27,7 @@ services:
     ports:
       - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
       - "127.0.0.1:${RABBITMQ_MGMT_PORT:-15672}:15672"
+      - "172.30.0.1:15692:15692"   # kps scrape（見檔頭 ADR-006 例外）
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-airadar}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set in .env}
@@ -78,8 +86,9 @@ services:
   # Each joins the bookshelf-echo default net (to reach postgres/rabbitmq by name) and
   # the external infra-shared-network (so infra-prometheus can scrape its
   # 127.0.0.1-free metrics port). Config comes from .env; the vars below override
-  # it for in-container networking. Metrics ports are NOT published to the host —
-  # zero-inbound (ADR-006) is preserved.
+  # it for in-container networking. Metrics ports are published to 172.30.0.1
+  # only (kps scrape — ADR-006 exception in the header), never to a public
+  # interface.
   #
   # The *_PORT vars in .env are HOST bindings and may be remapped to dodge a
   # conflict; inside the network each service always listens on its stock port,
@@ -88,6 +97,8 @@ services:
     image: ${BOOKSHELF_ECHO_PRODUCERS_IMAGE:-ghcr.io/nplus-father/bookshelf-echo-producers:latest}
     logging: *default-logging
     container_name: bookshelf-echo-producers
+    ports:
+      - "172.30.0.1:9101:9101"   # kps scrape
     env_file: [.env]
     environment: &app-env
       DATABASE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-airadar}
@@ -106,6 +117,8 @@ services:
     image: ${BOOKSHELF_ECHO_ENRICHER_IMAGE:-ghcr.io/nplus-father/bookshelf-echo-enricher:latest}
     logging: *default-logging
     container_name: bookshelf-echo-enricher
+    ports:
+      - "172.30.0.1:9102:9102"   # kps scrape
     env_file: [.env]
     environment: *app-env
     depends_on:
@@ -121,6 +134,8 @@ services:
     image: ${BOOKSHELF_ECHO_MATCHER_IMAGE:-ghcr.io/nplus-father/bookshelf-echo-matcher:latest}
     logging: *default-logging
     container_name: bookshelf-echo-matcher
+    ports:
+      - "172.30.0.1:9105:9105"   # kps scrape
     env_file: [.env]
     environment: *app-env
     depends_on:
@@ -134,6 +149,8 @@ services:
     image: ${BOOKSHELF_ECHO_DIGESTER_IMAGE:-ghcr.io/nplus-father/bookshelf-echo-digester:latest}
     logging: *default-logging
     container_name: bookshelf-echo-digester
+    ports:
+      - "172.30.0.1:9103:9103"   # kps scrape
     env_file: [.env]
     environment: *app-env
     depends_on:
@@ -147,6 +164,8 @@ services:
     image: ${BOOKSHELF_ECHO_PUBLISHER_IMAGE:-ghcr.io/nplus-father/bookshelf-echo-publisher:latest}
     logging: *default-logging
     container_name: bookshelf-echo-publisher
+    ports:
+      - "172.30.0.1:9104:9104"   # kps scrape
     env_file: [.env]
     environment:
       <<: *app-env
@@ -201,6 +220,8 @@ services:
     container_name: bookshelf-echo-postgres-exporter
     logging: *default-logging
     restart: unless-stopped
+    ports:
+      - "172.30.0.1:9187:9187"   # kps scrape
     environment:
       # 刻意不用 DATA_SOURCE_NAME 的單一 URL 形式:密碼含 "/" 之類的字元會讓
       # URL 解析失敗,而 exporter 的錯誤訊息會把完整 DSN（含密碼）印進 log。
