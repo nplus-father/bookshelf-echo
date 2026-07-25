@@ -50,43 +50,29 @@ services:
     restart: unless-stopped
     networks: [default, infra-shared]   # infra-shared so Prometheus can scrape :15692
 
-  postgres:
-    image: postgres:17
-    logging: *default-logging
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-airadar}
-      POSTGRES_USER: ${POSTGRES_USER:-airadar}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
-    volumes:
-      - pg-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-airadar} -d ${POSTGRES_DB:-airadar}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+  # postgres 服務已退役（2026-07-26）：資料庫 2026-07-20 真遷移進 CNPG
+  # （10.43.77.92，見 nplus-infra docs/k3s-migration.md Phase 3），舊容器
+  # 凍結 idle 觀察期滿、實測 0 連線後移除。pg-data volume
+  # （bookshelf-echo_pg-data）在 docker 裡再留幾天當最後保險，
+  # 7/27 之後 docker volume rm 拆掉。
 
   flyway:
     image: flyway/flyway:11
     logging: *default-logging
     command: migrate
     environment:
-      FLYWAY_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-airadar}
+      FLYWAY_URL: jdbc:postgresql://${POSTGRES_HOST:?set in .env}:5432/${POSTGRES_DB:-airadar}
       FLYWAY_USER: ${POSTGRES_USER:-airadar}
       FLYWAY_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
     volumes:
       - ./db/migrations:/flyway/sql:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # ---- pipeline apps (JVM, Jib images) ---------------------------------------
-  # Each joins the bookshelf-echo default net (to reach postgres/rabbitmq by name) and
+  # Each joins the bookshelf-echo default net (to reach rabbitmq by name) and
   # the external infra-shared-network (so infra-prometheus can scrape its
   # 127.0.0.1-free metrics port). Config comes from .env; the vars below override
-  # it for in-container networking. Metrics ports are published to 172.30.0.1
+  # it for in-container networking. Postgres lives in CNPG (POSTGRES_HOST in
+  # .env points at its ClusterIP). Metrics ports are published to 172.30.0.1
   # only (kps scrape — ADR-006 exception in the header), never to a public
   # interface.
   #
@@ -101,13 +87,12 @@ services:
       - "172.30.0.1:9101:9101"   # kps scrape
     env_file: [.env]
     environment: &app-env
-      DATABASE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-airadar}
+      DATABASE_URL: jdbc:postgresql://${POSTGRES_HOST:?set in .env}:5432/${POSTGRES_DB:-airadar}
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
       RABBITMQ_MGMT_PORT: "15672"
       METRICS_BIND: 0.0.0.0
     depends_on:
-      postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       flyway: { condition: service_completed_successfully }
     restart: unless-stopped
@@ -122,7 +107,6 @@ services:
     env_file: [.env]
     environment: *app-env
     depends_on:
-      postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       flyway: { condition: service_completed_successfully }
     restart: unless-stopped
@@ -139,7 +123,6 @@ services:
     env_file: [.env]
     environment: *app-env
     depends_on:
-      postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       flyway: { condition: service_completed_successfully }
     restart: unless-stopped
@@ -154,7 +137,6 @@ services:
     env_file: [.env]
     environment: *app-env
     depends_on:
-      postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       flyway: { condition: service_completed_successfully }
     restart: unless-stopped
@@ -173,7 +155,6 @@ services:
     volumes:
       - ./out/content:/app/content     # daily/weekly markdown persists on the host
     depends_on:
-      postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       flyway: { condition: service_completed_successfully }
     restart: unless-stopped
@@ -218,11 +199,9 @@ services:
     restart: unless-stopped
 
   # Postgres 指標 —— 這個 DB 裝著 essays、llm_usage、items,是整條 pipeline
-  # 唯一的持久狀態,卻一直沒有任何 exporter。連線數、交易速率、資料庫大小
-  # 都看不到,只有 cAdvisor 的容器層 CPU/記憶體。
-  #
-  # 同時掛兩個網路:postgres 只在本 stack 的 default 網路,而 Prometheus 在
-  # infra-shared-network,這個 exporter 是唯一的橋。
+  # 唯一的持久狀態。DB 本體在 CNPG（POSTGRES_HOST 指 ClusterIP），這個
+  # exporter 從 docker 回頭連過去抓 —— 雙軌期為了 dashboard/rules 的 pg_*
+  # 指標 parity 留著,長期正解是 CNPG 的 enablePodMonitor（cnpg_* 指標）。
   postgres-exporter:
     image: quay.io/prometheuscommunity/postgres-exporter
     container_name: bookshelf-echo-postgres-exporter
@@ -234,19 +213,15 @@ services:
       # 刻意不用 DATA_SOURCE_NAME 的單一 URL 形式:密碼含 "/" 之類的字元會讓
       # URL 解析失敗,而 exporter 的錯誤訊息會把完整 DSN（含密碼）印進 log。
       # 拆成三個變數就沒有編碼問題,也不會有人需要在 compose 裡手動 urlencode。
-      DATA_SOURCE_URI: "${POSTGRES_HOST:-postgres}:5432/${POSTGRES_DB:-airadar}?sslmode=disable"
+      DATA_SOURCE_URI: "${POSTGRES_HOST:?set in .env}:5432/${POSTGRES_DB:-airadar}?sslmode=disable"
       DATA_SOURCE_USER: "${POSTGRES_USER:-airadar}"
       DATA_SOURCE_PASS: "${POSTGRES_PASSWORD:?set in .env}"
-    depends_on:
-      postgres:
-        condition: service_healthy
     networks:
       - default
       - infra-shared
 
 volumes:
   rabbitmq-data:
-  pg-data:
 
 networks:
   # bookshelf-echo's own bridge (auto-created as bookshelf-echo_default) is referenced as
