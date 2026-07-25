@@ -57,12 +57,18 @@ emit() {
     echo '# HELP site_publish_foreign_files 工作副本裡不屬於本容器 uid、因而改寫不了的檔案數'
     echo '# TYPE site_publish_foreign_files gauge'
     echo "site_publish_foreign_files $foreign"
-    echo '# HELP site_deploy_last_match_timestamp_seconds 最後一次確認線上站台的 commit 等於 origin/main'
-    echo '# TYPE site_deploy_last_match_timestamp_seconds gauge'
-    echo "site_deploy_last_match_timestamp_seconds $last_deploy_match"
-    echo '# HELP site_deploy_check_failures 連續幾輪問不到線上站台的 version.json（0 = 上一輪問到了）'
-    echo '# TYPE site_deploy_check_failures gauge'
-    echo "site_deploy_check_failures $deploy_fails"
+    # 沒設 SITE_VERSION_URL 就完全不吐這兩條 —— 檢查沒在跑的時候，「凍結在
+    # 容器啟動那刻的時間戳」看起來跟真的停更一模一樣，30 分鐘後就是一次誤報。
+    # 沒有序列才是誠實的：對應的 alert 兩側都刻意不設 absent()/noDataState:
+    # Alerting，序列不在就不會叫。
+    if [ -n "${SITE_VERSION_URL:-}" ]; then
+      echo '# HELP site_deploy_last_match_timestamp_seconds 最後一次確認線上站台的 commit 等於 origin/main'
+      echo '# TYPE site_deploy_last_match_timestamp_seconds gauge'
+      echo "site_deploy_last_match_timestamp_seconds $last_deploy_match"
+      echo '# HELP site_deploy_check_failures 連續幾輪問不到線上站台的 version.json（0 = 上一輪問到了）'
+      echo '# TYPE site_deploy_check_failures gauge'
+      echo "site_deploy_check_failures $deploy_fails"
+    fi
   } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 0; }
   # 原子寫入：node_exporter 隨時可能在讀，寫一半的檔會被它整個拒收。
   mv -f "$tmp" "$METRIC_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true

@@ -58,10 +58,14 @@ jobs:
             docker compose pull producers enricher matcher digester publisher
             docker compose up -d producers enricher matcher digester publisher
             # site-publisher runs a mounted script (config/site-publish.sh) as a
-            # long-lived process — it reads the script once at start. `up -d` won't
-            # touch it, so a script change would silently keep running the old copy
-            # (caused the 2026-07-12 publishing outage). Restart to reload the script.
-            docker compose restart site-publisher
+            # long-lived process — it reads the script once at start. Plain `up -d`
+            # sees no image/config diff and leaves it alone, so a script change would
+            # silently keep running the old copy (caused the 2026-07-12 publishing
+            # outage). `restart` reloads the script but does NOT apply changed
+            # `environment:` — a var added to docker-compose.yml never reached the
+            # container, which is how SITE_VERSION_URL silently no-op'd on 2026-07-25.
+            # --force-recreate is the only one that does both.
+            docker compose up -d --force-recreate site-publisher
             docker image prune -f
             echo "bookshelf-echo deploy completed at $(date)"
         env:
