@@ -56,7 +56,11 @@ jobs:
             echo "$GHCR_TOKEN" | docker login ghcr.io -u andrewnplus --password-stdin
             git pull --ff-only
             docker compose pull producers enricher matcher digester publisher
-            docker compose up -d producers enricher matcher digester publisher
+            # postgres-exporter 一併列入：它不是五個 app 的依賴，不列的話它的
+            # compose 改動永遠不會被套用（2026-07-25 發佈 metrics port 那次
+            # 就是這樣漏掉、事後手動補的）。rabbitmq 是 app 的依賴，up -d 會
+            # 順帶重建，不用列。
+            docker compose up -d producers enricher matcher digester publisher postgres-exporter
             # site-publisher runs a mounted script (config/site-publish.sh) as a
             # long-lived process — it reads the script once at start. Plain `up -d`
             # sees no image/config diff and leaves it alone, so a script change would
