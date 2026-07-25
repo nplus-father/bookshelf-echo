@@ -208,7 +208,11 @@ services:
       # 每輪去問線上站台自己是哪個 commit，用來守 push 成功之後、GitHub Pages
       # 之前的那一段（見 site-publish.sh 的 deploy check）。這份 JSON 由共用
       # workflow astro-build-deploy.yml 在 build 時寫進 dist/。留空就跳過檢查。
-      SITE_VERSION_URL: "https://nplus-father.github.io/bookshelf-echo-site/version.json"
+      #
+      # 用 nplus.wiki 這個自訂網域而不是 nplus-father.github.io：後者會 301 轉過來
+      # （busybox wget 跟得動，但那是白繞一跳），而且監控本來就該量使用者真正
+      # 打到的那個位址。astro.config.mjs 的 site 仍寫著 github.io，那份設定是舊的。
+      SITE_VERSION_URL: "https://nplus.wiki/bookshelf-echo-site/version.json"
     depends_on:
       - publisher
     restart: unless-stopped
