@@ -22,15 +22,24 @@ METRIC_FILE="$TEXTFILE_DIR/site-publish.prom"
 
 fails=0
 foreign=0
+deploy_fails=0
 # 容器重啟不該讓「上次成功」歸零：0 會讓 time()-0 變成 56 年，alert 立刻誤報。
 last_ok=0
 last_push=0
+last_deploy_match=0
 if [ -f "$METRIC_FILE" ]; then
   last_ok=$(awk '$1=="site_publish_last_success_timestamp_seconds"{print int($2)}' "$METRIC_FILE" 2>/dev/null || true)
   last_push=$(awk '$1=="site_publish_last_push_timestamp_seconds"{print int($2)}' "$METRIC_FILE" 2>/dev/null || true)
+  last_deploy_match=$(awk '$1=="site_deploy_last_match_timestamp_seconds"{print int($2)}' "$METRIC_FILE" 2>/dev/null || true)
 fi
 [ -n "${last_ok:-}" ] || last_ok=0
 [ -n "${last_push:-}" ] || last_push=0
+[ -n "${last_deploy_match:-}" ] || last_deploy_match=0
+# last_ok 不同，它在第一輪成功時就會被填上；last_deploy_match 只有在線上站台
+# 真的追上 origin/main 那一刻才動，而剛上線這個指標時 version.json 還沒被任何
+# 一次 build 寫出去。0 會讓 alert 在部署當下就誤報，所以冷啟動先給一個門檻的
+# 寬限期。指標檔存在時走上面的讀回，重啟不會白白重置這段寬限。
+[ "$last_deploy_match" -gt 0 ] || last_deploy_match=$(date +%s)
 
 emit() {
   [ -d "$TEXTFILE_DIR" ] || return 0
@@ -48,6 +57,12 @@ emit() {
     echo '# HELP site_publish_foreign_files 工作副本裡不屬於本容器 uid、因而改寫不了的檔案數'
     echo '# TYPE site_publish_foreign_files gauge'
     echo "site_publish_foreign_files $foreign"
+    echo '# HELP site_deploy_last_match_timestamp_seconds 最後一次確認線上站台的 commit 等於 origin/main'
+    echo '# TYPE site_deploy_last_match_timestamp_seconds gauge'
+    echo "site_deploy_last_match_timestamp_seconds $last_deploy_match"
+    echo '# HELP site_deploy_check_failures 連續幾輪問不到線上站台的 version.json（0 = 上一輪問到了）'
+    echo '# TYPE site_deploy_check_failures gauge'
+    echo "site_deploy_check_failures $deploy_fails"
   } > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 0; }
   # 原子寫入：node_exporter 隨時可能在讀，寫一半的檔會被它整個拒收。
   mv -f "$tmp" "$METRIC_FILE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
@@ -87,6 +102,35 @@ while true; do
     sleep "$INTERVAL"
     continue
   fi
+
+  # 「推上去了」不等於「上線了」。push 成功之後還隔著一整條 GitHub Actions +
+  # Pages CDN，那一段壞掉時上面所有指標都是綠的：2026-07-25 deploy-pages 空等
+  # 10 分鐘後 abort，站台停在上一版，三條 alert 一條都沒響。這裡直接去問線上
+  # 那份站台自己是哪個 commit（由共用 workflow 的 Stamp build version 寫出）。
+  #
+  # 比對 origin/main 而不是本地 HEAD 是刻意的：push 失敗時本地會領先，但那時
+  # 線上與 origin 其實是一致的，該響的是 site-publish-stale 那條。比對 origin
+  # 讓這條只在「origin 有了、站台沒有」時開口，兩條規則不會為同一個故障響兩次。
+  origin_sha=$(git rev-parse FETCH_HEAD 2>/dev/null || echo "")
+  # origin_sha 空掉時整個檢查沒有意義（比對基準都沒有了），要靜靜跳過而不是
+  # 拿空字串去比 —— 那會每輪都判成「線上落後」，最後誤報成一次假停更。
+  if [ -n "${SITE_VERSION_URL:-}" ] && [ -n "$origin_sha" ]; then
+    # Pages 的 CDN 會 cache 十分鐘，帶個每輪都不同的 query 才問得到剛上線的那份。
+    body=$(wget -q -T 20 -O - "${SITE_VERSION_URL}?_=$(date +%s)" 2>/dev/null || echo "")
+    deployed_sha=$(printf '%s' "$body" | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{7,40\}\)".*/\1/p' | head -1)
+    if [ -z "$deployed_sha" ]; then
+      deploy_fails=$((deploy_fails + 1))
+      echo "deploy check FAILED at $(date -u +%FT%TZ)（連續第 ${deploy_fails} 次）：${SITE_VERSION_URL} 取不到或沒有 sha 欄位"
+    else
+      deploy_fails=0
+      if [ "$deployed_sha" = "$origin_sha" ]; then
+        last_deploy_match=$(date +%s)
+      else
+        echo "deploy lagging at $(date -u +%FT%TZ)：線上 ${deployed_sha}，origin/main ${origin_sha}"
+      fi
+    fi
+  fi
+
   mkdir -p /repo/content/daily /repo/content/weekly /repo/content/essays /repo/public/data/metrics
   cp -r /src/daily/. /repo/content/daily/ 2>/dev/null || true
   cp -r /src/weekly/. /repo/content/weekly/ 2>/dev/null || true

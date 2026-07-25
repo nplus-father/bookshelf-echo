@@ -205,6 +205,10 @@ services:
       HOME: /tmp
       SITE_GIT_TOKEN: ${SITE_GIT_TOKEN:?set in .env}
       SYNC_INTERVAL_SECONDS: "300"
+      # 每輪去問線上站台自己是哪個 commit，用來守 push 成功之後、GitHub Pages
+      # 之前的那一段（見 site-publish.sh 的 deploy check）。這份 JSON 由共用
+      # workflow astro-build-deploy.yml 在 build 時寫進 dist/。留空就跳過檢查。
+      SITE_VERSION_URL: "https://nplus-father.github.io/bookshelf-echo-site/version.json"
     depends_on:
       - publisher
     restart: unless-stopped
