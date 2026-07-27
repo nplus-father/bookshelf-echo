@@ -50,6 +50,27 @@ class EssayistJob(
     private val attempts = DailyAttemptGuard(Config.int("DAILY_JOB_MAX_ATTEMPTS", 3))
     private fun outcome(name: String) = registry.counter("airadar_essay_runs_total", "outcome", name)
 
+    /**
+     * 「最後一次真的寫出 essay 是什麼時候」。
+     *
+     * outcome counter 說得出每一輪的結果，卻說不出「已經幾天沒有文章了」——而
+     * 停更正是這條 pipeline 壞掉的樣子：佇列清空、站台照建、所有指標全綠，只是
+     * 沒有東西發出去（2026-07-18/19 的 critic loop 就是這樣過了兩天）。
+     *
+     * 起始值從 DB 回填，容器重啟不會把時鐘歸零；真的一篇都沒有時退回啟動時間，
+     * 而不是 0 —— time() - 0 是 56 年，會在第一次抓取就誤報。
+     */
+    private val lastEssayEpoch = java.util.concurrent.atomic.AtomicLong(
+        repo.lastEssayAt()?.toEpochSecond() ?: (System.currentTimeMillis() / 1000),
+    )
+
+    init {
+        io.micrometer.core.instrument.Gauge
+            .builder("airadar_essay_last_success_timestamp_seconds", lastEssayEpoch) { it.get().toDouble() }
+            .description("最後一次成功產出每日評析的 UNIX 時間；缺席一天合法，連續數天不是")
+            .register(registry)
+    }
+
     fun runIfDue(now: Instant) {
         val utcNow = OffsetDateTime.ofInstant(now, ZoneOffset.UTC)
         if (utcNow.hour < essayHourUtc) return
@@ -140,6 +161,7 @@ class EssayistJob(
         repo.markComposed(candidate.itemId)
         Rabbit.publish(channel, "", RabbitTopology.PUBLISH_QUEUE, StageMessage(candidate.itemId, kind = "essay").encode())
         outcome("composed").increment()
+        lastEssayEpoch.set(System.currentTimeMillis() / 1000)
         log.info("essay {}: composed from item {} ({}), {} book(s)", day, candidate.itemId, candidate.title, Json.parseToJsonElement(result.booksJson).jsonArray.size)
     }
 

@@ -387,6 +387,22 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
+    /**
+     * When the last essay was actually written, or null on an empty shelf.
+     *
+     * Feeds the stale-essay gauge: a day without an essay is legal (寧缺勿濫),
+     * but a week of them is a failure that every other metric shows as green —
+     * the queues drain, the site builds, and nothing is published. Read at
+     * startup so a container restart cannot reset the clock.
+     */
+    fun lastEssayAt(): OffsetDateTime? = ds.connection.use { c ->
+        c.prepareStatement("SELECT max(created_at) FROM essays").use { st ->
+            st.executeQuery().use { rs ->
+                if (rs.next()) rs.getObject(1, OffsetDateTime::class.java) else null
+            }
+        }
+    }
+
     fun saveEssay(day: LocalDate, itemId: Long, title: String, essayMd: String, booksJson: String, model: String) {
         ds.connection.use { c ->
             c.prepareStatement(
@@ -439,14 +455,20 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
-    data class DigestSummary(val summaryZh: String, val summaryEn: String)
+    /**
+     * [category] is the digester's own labelling of the news (engineering,
+     * research, policy, product, other). It travels to the essay's frontmatter
+     * so the site can group essays — and the books they drew on — by the kind
+     * of news that pulled them off the shelf.
+     */
+    data class DigestSummary(val summaryZh: String, val summaryEn: String, val category: String?)
 
     /** The digest summaries for one item (one digest per item), or null if undigested. */
     fun digestForItem(itemId: Long): DigestSummary? = ds.connection.use { c ->
-        c.prepareStatement("SELECT summary_zh, summary_en FROM digests WHERE item_id = ?").use { st ->
+        c.prepareStatement("SELECT summary_zh, summary_en, category FROM digests WHERE item_id = ?").use { st ->
             st.setLong(1, itemId)
             st.executeQuery().use { rs ->
-                if (rs.next()) DigestSummary(rs.getString(1), rs.getString(2)) else null
+                if (rs.next()) DigestSummary(rs.getString(1), rs.getString(2), rs.getString(3)) else null
             }
         }
     }

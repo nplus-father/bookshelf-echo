@@ -79,4 +79,31 @@ class EssayRendererTest {
         assertFalse(md.contains("books:"))
         assertTrue(md.contains("news:"))
     }
+
+    @Test
+    fun `category and author come from the match payload, keyed by slug`() {
+        val md = EssayRenderer.render(
+            essay("""[{"book_id":"enough","book_title":"夠了","chapter_id":"enough:c1","chapter_title":"成本"}]"""),
+            item(),
+            newsCategory = "policy",
+            matchBooksJson = """[{"book_id":"enough","category":"finance","author":"John C. Bogle"},
+                                 {"book_id":"other-book","category":"history"}]""",
+        )
+        assertTrue(md.contains("  category: \"policy\""))
+        assertTrue(md.contains("    category: \"finance\""))
+        assertTrue(md.contains("    author: \"John C. Bogle\""))
+        // A book in the retrieval payload that the essay did not cite stays out.
+        assertFalse(md.contains("history"))
+    }
+
+    @Test
+    fun `a malformed match payload costs decoration, never the publish`() {
+        val md = EssayRenderer.render(
+            essay("""[{"book_id":"enough","book_title":"夠了","chapter_id":"enough:c1","chapter_title":"成本"}]"""),
+            item(),
+            matchBooksJson = "{not json",
+        )
+        assertTrue(md.contains("    slug: \"enough\""))
+        assertFalse(md.contains("    category:"))
+    }
 }

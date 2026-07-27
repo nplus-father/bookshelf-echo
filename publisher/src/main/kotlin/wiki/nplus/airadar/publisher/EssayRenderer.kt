@@ -21,12 +21,22 @@ import wiki.nplus.airadar.common.ItemRepository
  */
 object EssayRenderer {
 
+    /**
+     * [newsCategory] is the digester's label for the news, [matchBooksJson] the
+     * retrieval payload the matcher stored (it carries each book's category and
+     * author, which the essayist's own book list does not). Both are optional:
+     * an essay rendered without them is still valid, just less groupable — the
+     * site treats every one of these fields as optional.
+     */
     fun render(
         essay: ItemRepository.EssayRow,
         item: ItemRepository.ItemRow,
         newsSummary: String? = null,
+        newsCategory: String? = null,
+        matchBooksJson: String? = null,
     ): String {
         val books = Json.parseToJsonElement(essay.booksJson).jsonArray.map { it.jsonObject }
+        val meta = bookMetaBySlug(matchBooksJson)
         return buildString {
             appendLine("---")
             appendLine("title: ${yaml(essay.title)}")
@@ -42,6 +52,10 @@ object EssayRenderer {
             appendLine("  url: ${yaml(item.url)}")
             appendLine("  source: ${yaml(item.source)}")
             if (!newsSummary.isNullOrBlank()) appendLine("  summary: ${yaml(newsSummary)}")
+            // The kind of news this essay answers. Paired with each book's own
+            // category below, it is what lets the site say which shelves keep
+            // answering which kind of story.
+            if (!newsCategory.isNullOrBlank()) appendLine("  category: ${yaml(newsCategory)}")
             if (books.isNotEmpty()) {
                 appendLine("books:")
                 books.forEach { b ->
@@ -54,12 +68,36 @@ object EssayRenderer {
                     if (slug != null) appendLine("    slug: ${yaml(slug)}")
                     // "<slug>:<content-path>" — the site deep-links to the chapter's deployed page.
                     if (chapterId != null) appendLine("    chapter_id: ${yaml(chapterId)}")
+                    // Category/author come from the retrieval payload, not the
+                    // essayist: the shelf's own metadata is the honest source
+                    // for how a book should be grouped.
+                    val m = slug?.let { meta[it] }
+                    m?.get("category")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+                        ?.let { appendLine("    category: ${yaml(it)}") }
+                    m?.get("author")?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+                        ?.let { appendLine("    author: ${yaml(it)}") }
                 }
             }
             appendLine("---")
             appendLine()
             appendLine(essay.essayMd.trim())
         }
+    }
+
+    /**
+     * The matcher's retrieval payload keyed by library slug. Malformed or absent
+     * JSON yields an empty map rather than an exception: this is decoration on
+     * top of an essay that is already written and paid for — it must never be
+     * the reason a publish fails.
+     */
+    private fun bookMetaBySlug(matchBooksJson: String?): Map<String, JsonObject> {
+        if (matchBooksJson.isNullOrBlank()) return emptyMap()
+        val array = runCatching { Json.parseToJsonElement(matchBooksJson).jsonArray }.getOrNull() ?: return emptyMap()
+        return array.mapNotNull { element ->
+            val o = runCatching { element.jsonObject }.getOrNull() ?: return@mapNotNull null
+            val slug = bookSlug(o) ?: return@mapNotNull null
+            slug to o
+        }.toMap()
     }
 
     /** book_id (== library slug) if present, else the slug prefix of chapter_id. */
