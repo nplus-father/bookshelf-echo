@@ -26,7 +26,10 @@ RabbitMQ 4.x ── ingest.q ─▶ enricher ── digest.q ─▶ digester ─
     └── dlq.q                 (+ replay CLI)                              site-publisher
                                                                           (sidecar, git)
                                                                                    │
-                                                     site repo ─▶ GitHub Actions ─▶ Pages
+                                                 ┌─────────────────────────────────┴───┐
+                                     content ─▶ main ─▶ Actions ─▶ Pages     metrics ─▶ data branch
+                                                                                    (no build; the
+                                                                                dashboard fetches it)
 ```
 
 State machine per item: `RECEIVED → ENRICHED → MATCHED → DIGESTED → PUBLISHED`
@@ -70,10 +73,14 @@ statically built site.
 
 Delivery to the site repo is the `site-publisher` compose sidecar (`alpine/git`
 running [`config/site-publish.sh`](config/site-publish.sh)), not the publisher:
-it rebases onto `origin/main`, copies the markdown into `content/` and the
-metrics snapshot into `public/`, and pushes. The snapshot lands at
-`/data/metrics/latest.json` on the site, where the dashboard page renders it —
-that file is the dashboard's only data source (ADR-005: no runtime backend).
+it rebases onto `origin/main`, copies the markdown into `content/`, and pushes.
+
+The metrics snapshot takes a different route (ADR-005 amendment, 2026-07-27).
+It changes hourly while content changes daily, so shipping both on `main` meant
+27 builds a day for one day's worth of content. It now goes to an orphan commit
+on a `data` branch — which the deploy workflow does not watch — and the
+dashboard page reads it from there at view time, with the build-time fetch as
+the static fallback.
 
 ## Running
 

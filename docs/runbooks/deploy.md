@@ -112,6 +112,36 @@ ESSAY spend that used to be invisible. **A jump on those panels right after this
 deploy is the old blind spot becoming visible, not new spend.** `sum by
 (purpose)` is what answers "where did the money go".
 
+### The dashboard's data lives on a branch, not on the site
+
+Since 2026-07-27 the metrics snapshot goes to the site repo's `data` branch, not
+into `main` (ADR-005 amendment). Three places to look when the dashboard's
+numbers stop moving:
+
+```bash
+# 1. is the sidecar still pushing?  (metric + log)
+docker compose logs site-publisher | grep "metrics sync FAILED"
+# 2. what does the branch actually hold?
+curl -s https://raw.githubusercontent.com/nplus-father/bookshelf-echo-site/data/metrics/latest.json | head -c 200
+# 3. is the publisher still writing the file the sidecar reads?
+ls -l out/content/data/metrics/latest.json
+```
+
+`BookshelfEchoMetricsStale` (90 min) is the alert for step 1–2;
+`BookshelfEchoSnapshotStale` (2.5 h) covers step 3. The page itself always
+states how old its data is, so "the dashboard looks fine" is never the check.
+
+### Essays that never come
+
+`BookshelfEchoEssayStale` fires after three days without an essay. A single
+missing day is a legal outcome (寧缺勿濫), which is exactly why every other
+signal stays green through a real outage: queues drain, the site builds, the
+sidecar succeeds every round. Read the outcome counter to tell the cases apart —
+`airadar_essay_runs_total{outcome=...}`: `budget_skipped`, `judge_rejected`,
+`skipped` (the model declined), `unverified_quotes`, `attempts_exhausted`. If
+`ESSAY_MODEL` is a `-preview` id, also check the model still exists: preview
+names get retired, and the whole tier fails at once when they do.
+
 The ops CLI runs from the host against the published 127.0.0.1 ports:
 
 ```bash
@@ -180,6 +210,28 @@ affected day:
 ```bash
 ./ops/build/install/ops/bin/ops republish-essay 2026-07-17
 ```
+
+> **On prod that command does not run.** `nplus.space` has no JDK/JRE at all —
+> every service lives in a container — so the dist is there but `java` is not
+> (`JAVA_HOME is not set`). A throwaway `eclipse-temurin` container does not fix
+> it either: Postgres is now the k3s CNPG cluster and a plain
+> `--network bookshelf-echo_default` container cannot reach that ClusterIP.
+>
+> Send the stage message directly instead — that is all `republish-essay` does:
+>
+> ```bash
+> cd ~/workspace/bookshelf-echo
+> u=$(grep -E '^RABBITMQ_USER=' .env | cut -d= -f2)
+> p=$(grep -E '^RABBITMQ_PASSWORD=' .env | cut -d= -f2)
+> curl -s -u "$u:$p" -X POST "http://172.30.0.1:15672/api/exchanges/%2f/amq.default/publish" \
+>   -H 'content-type: application/json' \
+>   -d '{"properties":{},"routing_key":"publish.q","payload":"{\"itemId\":14814,\"kind\":\"essay\"}","payload_encoding":"string"}'
+> ```
+>
+> `{"routed":true}` means it landed. Item ids come from the `essays` table:
+> `kubectl exec -n bookshelf-pg bookshelf-pg-1 -c postgres -- psql -U postgres -d airadar -c "select day, item_id from essays order by day"`.
+> Idempotent, so re-running the whole set is safe (2026-07-27 did exactly that
+> for all eight published essays).
 
 This re-emits the day's essay message (`kind=essay`) onto `publish.q`; the
 publisher rewrites `essays/<day>.md` from Postgres with the current renderer, and
