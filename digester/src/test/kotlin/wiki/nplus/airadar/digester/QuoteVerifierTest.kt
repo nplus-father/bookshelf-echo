@@ -1,6 +1,7 @@
 package wiki.nplus.airadar.digester
 
 import wiki.nplus.airadar.common.ItemRepository
+import wiki.nplus.airadar.common.QuoteVerifier
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue

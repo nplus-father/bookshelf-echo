@@ -30,10 +30,19 @@ interface LlmClient {
 
     /**
      * The daily essay: news + library passages → book-informed commentary, or a
-     * refusal. One attempt per day — there is no revision round, because a
-     * rewrite is a second call at the most expensive tier we buy.
+     * refusal.
+     *
+     * [unverifiedQuotes] is non-empty only on the one revision the day allows
+     * (ADR-012): these blockquotes could not be found in the source material, so
+     * the rewrite is told exactly which sentences to fix. A revision is a second
+     * call at the most expensive tier we buy, which is why it is deterministic
+     * string comparison — not a model's opinion — that triggers it.
      */
-    fun essay(candidate: ItemRepository.EssayCandidate, chapters: List<ChapterExcerpt>): EssayResult
+    fun essay(
+        candidate: ItemRepository.EssayCandidate,
+        chapters: List<ChapterExcerpt>,
+        unverifiedQuotes: List<String> = emptyList(),
+    ): EssayResult
 
     /**
      * The relevance judge: is the retrieved book evidence a genuine frame for
@@ -126,6 +135,7 @@ class FakeLlmClient : LlmClient {
     override fun essay(
         candidate: ItemRepository.EssayCandidate,
         chapters: List<LlmClient.ChapterExcerpt>,
+        unverifiedQuotes: List<String>,
     ): EssayResult = EssayResult(
         skip = false,
         skipReason = null,

@@ -1,10 +1,15 @@
 package wiki.nplus.airadar.publisher
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
 import wiki.nplus.airadar.common.Config
 import wiki.nplus.airadar.common.Db
 import wiki.nplus.airadar.common.ItemRepository
 import wiki.nplus.airadar.common.ItemState
+import wiki.nplus.airadar.common.LibraryClient
 import wiki.nplus.airadar.common.Rabbit
 import wiki.nplus.airadar.common.RabbitTopology
 import wiki.nplus.airadar.common.StageMessage
@@ -30,6 +35,35 @@ fun main() = wiki.nplus.airadar.common.App.main("publisher") {
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)
 
+    val http = java.net.http.HttpClient.newHttpClient()
+    // 只為了替引文標出處而存在的依賴（見 QuoteAnnotator）：拿回 essayist 當初
+    // 引用的那幾章全文，比對每一段 blockquote 屬於哪一本。取不到就不標，發佈
+    // 本身不受影響 —— 出處是加分，不是這條路的必要條件。
+    val library = LibraryClient.fromEnv(http)
+    val chapterChars = Config.int("ESSAY_CHAPTER_CHARS", 8000)
+
+    /**
+     * essayist 當初引用的章節全文。失敗一律回空清單：library-bridge 掛掉時
+     * essay 還是要出得去，只是少了出處標記。
+     */
+    fun quoteSources(essay: ItemRepository.EssayRow): List<QuoteAnnotator.Source> = runCatching {
+        Json.parseToJsonElement(essay.booksJson).jsonArray.mapNotNull { element ->
+            val b = element.jsonObject
+            val chapterId = b["chapter_id"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+            val text = library.chapter(chapterId, chapterChars) ?: return@mapNotNull null
+            QuoteAnnotator.Source(
+                bookTitle = b["book_title"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() } ?: return@mapNotNull null,
+                chapterTitle = b["chapter_title"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() },
+                chapterId = chapterId,
+                text = text,
+            )
+        }
+    }.getOrElse {
+        log.warn("quote attribution skipped for essay {}: {}", essay.day, it.toString())
+        emptyList()
+    }
+
     /** The daily essay (news-echo): one markdown file per day under essays/. */
     fun publishEssay(itemId: Long) {
         val essay = repo.essayByItem(itemId) ?: error("essay message for item $itemId but no essay row")
@@ -42,12 +76,15 @@ fun main() = wiki.nplus.airadar.common.App.main("publisher") {
         // from before the matcher, or a purged match) just means a less
         // groupable frontmatter.
         val match = repo.matchFor(itemId)
+        // 每段書引文標上出處。標記走 body（前端只負責把它變成連結），所以是在
+        // render 之前把 body 換掉，而不是多開一個渲染參數。
+        val annotated = essay.copy(essayMd = QuoteAnnotator.annotate(essay.essayMd, quoteSources(essay)))
         val target = contentDir.resolve("essays/${essay.day}.md")
         Files.createDirectories(target.parent)
         Files.writeString(
             target,
             EssayRenderer.render(
-                essay, item, digest?.summaryEn, digest?.category, match?.booksJson, match?.passagesJson,
+                annotated, item, digest?.summaryEn, digest?.category, match?.booksJson, match?.passagesJson,
             ),
         )
         repo.recordPublish("ESSAY", target.toString(), null, 1, "SUCCESS")

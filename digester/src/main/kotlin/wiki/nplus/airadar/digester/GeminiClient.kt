@@ -54,8 +54,9 @@ class GeminiClient(
     override fun essay(
         candidate: ItemRepository.EssayCandidate,
         chapters: List<LlmClient.ChapterExcerpt>,
+        unverifiedQuotes: List<String>,
     ): EssayResult =
-        parseEssay(generate(buildEssayPrompt(candidate, chapters)), model)
+        parseEssay(generate(buildEssayPrompt(candidate, chapters, unverifiedQuotes)), model)
 
     override fun judge(candidate: ItemRepository.EssayCandidate): JudgeResult =
         parseJudge(generate(buildJudgePrompt(candidate)), model)
@@ -174,9 +175,30 @@ class GeminiClient(
     private fun buildEssayPrompt(
         candidate: ItemRepository.EssayCandidate,
         chapters: List<LlmClient.ChapterExcerpt>,
+        unverifiedQuotes: List<String> = emptyList(),
     ): String {
+        // 章節在 prompt 裡再截一次的長度。取回來多少（ESSAY_CHAPTER_CHARS）與塞
+        // 進 prompt 多少必須是同一個數字，否則 essayist 會引用到它看得見、但
+        // 驗證端（拿的是取回的全文）也拿得到、而 publisher 標記時卻切掉的段落。
+        val chapterChars = Config.int("ESSAY_CHAPTER_CHARS", 12000)
         val chapterBlocks = chapters.joinToString("\n\n") { ch ->
-            "### 《${ch.bookTitle}》｜${ch.chapterTitle}（chapter_id: ${ch.chapterId}）\n${ch.content.take(6000)}"
+            "### 《${ch.bookTitle}》｜${ch.chapterTitle}（chapter_id: ${ch.chapterId}）\n${ch.content.take(chapterChars)}"
+        }
+        // 修訂輪（ADR-012）：確定性的引文比對抓到假引文時，把那幾句原封不動丟回
+        // 去，要求只修這裡。整篇重寫會讓好的段落一起賠掉。
+        val revision = if (unverifiedQuotes.isEmpty()) {
+            ""
+        } else {
+            """
+
+            ⚠️ 這是修訂稿。你上一稿有 ${unverifiedQuotes.size} 段 blockquote 在上面的原文中逐字比對不到
+            （系統用的是去標點、去空白後的字串包含比對，所以不是標點差異的問題，是字句本身對不上）：
+
+            ${unverifiedQuotes.joinToString("\n") { "            - 「${it.take(120)}」" }}
+
+            請重寫：把這幾段換成原文中確實存在的句子（逐字），或改用自己的話轉述、
+            移出 blockquote。其餘寫得好的部分請盡量保留，不要整篇重來。
+            """.trimIndent()
         }
         return """
             你是一個每日評論專欄的作者。你的獨特之處：用「書櫃」回應時事——從自己讀過的書中
@@ -195,8 +217,10 @@ class GeminiClient(
 
             $chapterBlocks
 
+            $revision
+
             寫作要求：
-            - 最多引用「兩本」書。
+            - 最多引用「${chapters.size.coerceAtLeast(1)}本」書——就是上面給你全文的那幾本。
             - 引文格式：**所有直接引文一律用 Markdown blockquote（行首 `>`）獨立成段，
               並且必須逐字出自上面的段落或章節全文（新聞內文亦可），一個字都不能改。**
               出處請寫在 blockquote 外面的正文裡。行內的「」只用於強調或指稱，

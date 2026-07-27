@@ -3,6 +3,10 @@
 - Status: Accepted
 - Date: 2026-07-20
 - Supersedes: the essay critic gate introduced in `58942b8` (2026-07-18)
+- Amended by: [ADR-012](ADR-012-one-revision-on-a-deterministic-trigger.md) —
+  the "forfeit the day rather than rewrite" rule now allows exactly one
+  revision, because the trigger is a string comparison rather than a model's
+  score. The rest of this ADR stands.
 
 ## Context
 

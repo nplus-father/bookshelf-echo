@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory
 import wiki.nplus.airadar.common.Config
 import wiki.nplus.airadar.common.ItemRepository
 import wiki.nplus.airadar.common.LibraryClient
+import wiki.nplus.airadar.common.QuoteVerifier
 import wiki.nplus.airadar.common.Rabbit
 import wiki.nplus.airadar.common.RabbitTopology
 import wiki.nplus.airadar.common.StageMessage
@@ -44,7 +45,14 @@ class EssayistJob(
     private val log = LoggerFactory.getLogger(EssayistJob::class.java)
     private val essayHourUtc = Config.int("ESSAY_HOUR_UTC", 22)
     private val ttlDays = Config.int("SHORTLIST_TTL_DAYS", 7)
-    private val maxChapters = Config.int("ESSAY_MAX_CHAPTERS", 2)
+    // 2 章、每章 6000 字是為 2.5-pro 的 context 訂的。essay 層現在跑 3.x（大得
+    // 多的 context，而且一天只呼叫一次），書證量對深度的影響比換模型本身更大。
+    // ESSAY_CHAPTER_CHARS 同時被 prompt 與 publisher 的引文標記讀取，三邊必須是
+    // 同一個數字。
+    private val maxChapters = Config.int("ESSAY_MAX_CHAPTERS", 3)
+    private val chapterChars = Config.int("ESSAY_CHAPTER_CHARS", 12000)
+    /** 引文對不上時，允許帶著「哪幾句對不上」重寫一次（ADR-012）。 */
+    private val reviseOnUnverifiedQuotes = Config.bool("ESSAY_REVISE_ON_BAD_QUOTES", true)
     private val maxJudged = Config.int("ESSAY_JUDGE_MAX_CANDIDATES", 3)
     private val dailyBudgetUsd = Config.double("DAILY_LLM_BUDGET_USD", 0.50)
     private val attempts = DailyAttemptGuard(Config.int("DAILY_JOB_MAX_ATTEMPTS", 3))
@@ -119,7 +127,7 @@ class EssayistJob(
         }
 
         val chapters = topChapters(candidate.passagesJson)
-        val result = usage.call(candidate.itemId, "ESSAY", essayist) { essayist.essay(candidate, chapters) }
+        var result = usage.call(candidate.itemId, "ESSAY", essayist) { essayist.essay(candidate, chapters) }
 
         if (result.skip) {
             // Consume the pick: retrying the same pairing tomorrow would burn
@@ -135,10 +143,47 @@ class EssayistJob(
         // model. A fabricated quote is the one flaw the author model cannot
         // catch in itself and the one a reader would never forgive; everything
         // else about draft quality the prompt and the skip clause already own.
-        // Forfeit the day rather than rewrite: the pick is consumed so tomorrow
-        // starts on a different pairing instead of re-buying this one.
-        val essayMd = result.essayMd ?: error("essay without body for item ${candidate.itemId}")
-        val quotes = QuoteVerifier.verify(essayMd, quoteSources(candidate, chapters))
+        var essayMd = result.essayMd ?: error("essay without body for item ${candidate.itemId}")
+        val sources = quoteSources(candidate, chapters)
+        var quotes = QuoteVerifier.verify(essayMd, sources)
+
+        // 一次修訂（ADR-012，修訂 ADR-011 的「寧可放棄也不重寫」）。
+        //
+        // ADR-011 拒絕重寫，理由是重寫等於在最貴的一層再付一次錢，而觸發它的是
+        // 模型對模型的評分——那種迴圈自己不會停。這裡兩個前提都不同：觸發者是
+        // 確定性的字串比對（它只會在真的有假引文時響），而且只准一次。放棄一天
+        // 的代價是整整一天沒有專欄，而失敗的往往只是三段引文裡的一段。
+        if (!quotes.ok && reviseOnUnverifiedQuotes) {
+            val spentBeforeRevision = repo.costSpentToday()
+            if (spentBeforeRevision >= dailyBudgetUsd) {
+                outcome("revision_budget_skipped").increment()
+                log.warn("essay {}: {} bad quote(s) but ${"$%.4f".format(spentBeforeRevision)} already spent — no revision", day, quotes.unverified.size)
+            } else {
+                outcome("revised").increment()
+                log.info("essay {}: {} quote(s) unverified, asking for one revision", day, quotes.unverified.size)
+                val revised = usage.call(candidate.itemId, "ESSAY", essayist) {
+                    essayist.essay(candidate, chapters, quotes.unverified)
+                }
+                val revisedMd = revised.essayMd
+                if (!revised.skip && revisedMd != null) {
+                    // 修訂稿只有在真的通過時才取代原稿：改壞了就用原稿走剩下的
+                    // 流程（它一樣過不了關，但至少 log 裡是同一份稿子）。
+                    val revisedQuotes = QuoteVerifier.verify(revisedMd, sources)
+                    if (revisedQuotes.ok) {
+                        result = revised
+                        essayMd = revisedMd
+                        quotes = revisedQuotes
+                    } else {
+                        log.warn("essay {}: revision still has {} bad quote(s)", day, revisedQuotes.unverified.size)
+                    }
+                } else {
+                    log.warn("essay {}: revision declined ({})", day, revised.skipReason)
+                }
+            }
+        }
+
+        // 修訂之後仍然對不上就放棄這一天：pick 被消耗掉，明天從別的配對開始，
+        // 而不是再買一次同一個。
         if (!quotes.ok) {
             repo.markComposed(candidate.itemId)
             outcome("unverified_quotes").increment()
@@ -184,7 +229,7 @@ class EssayistJob(
             .take(maxChapters)
             .mapNotNull { p ->
                 val chapterId = p["chapter_id"]?.jsonPrimitive?.content ?: return@mapNotNull null
-                val content = library.chapter(chapterId) ?: return@mapNotNull null
+                val content = library.chapter(chapterId, chapterChars) ?: return@mapNotNull null
                 LlmClient.ChapterExcerpt(
                     bookTitle = p["book_title"]?.jsonPrimitive?.content ?: "",
                     chapterTitle = p["chapter_title"]?.jsonPrimitive?.content ?: "",

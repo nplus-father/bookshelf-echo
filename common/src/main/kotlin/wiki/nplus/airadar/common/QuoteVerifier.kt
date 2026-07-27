@@ -1,4 +1,4 @@
-package wiki.nplus.airadar.digester
+package wiki.nplus.airadar.common
 
 /**
  * Quote fidelity check for the daily essay: every Markdown blockquote in the
@@ -19,6 +19,13 @@ package wiki.nplus.airadar.digester
  * often as quotation in Chinese prose, so checking it would reject good essays —
  * and a false positive here costs a whole day's column, while a missed quote
  * costs one flawed paragraph. The asymmetry sets the tolerance.
+ *
+ * Lives in `common` because the publisher runs the same match in reverse: the
+ * digester asks "is this quote in any source?", the publisher asks "which
+ * source is it in?" so it can label the quote with its book (see
+ * publisher's QuoteAnnotator). One normalizer, one blockquote parser — two
+ * copies would drift, and a drifted normalizer means a quote that verifies but
+ * cannot be attributed.
  */
 object QuoteVerifier {
     /** Below this, a "quote" is a term or a fragment, not a citation worth verifying. */
@@ -46,8 +53,13 @@ object QuoteVerifier {
         return Result(unverified.isEmpty(), unverified)
     }
 
-    /** Consecutive `>` lines are one quote: where the author broke the lines is not meaningful. */
-    private fun blockquotes(essayMd: String): List<String> {
+    /**
+     * Consecutive `>` lines are one quote: where the author broke the lines is
+     * not meaningful.
+     *
+     * Public because the publisher walks the same blocks to attribute them.
+     */
+    fun blockquotes(essayMd: String): List<String> {
         val blocks = mutableListOf<MutableList<String>>()
         var open = false
         essayMd.lineSequence().forEach { line ->
@@ -70,7 +82,13 @@ object QuoteVerifier {
      * between a book's text and a quotation of it without the quote being any
      * less faithful; a changed character is a different claim.
      */
-    private fun normalize(s: String): String = buildString(s.length) {
+    fun normalize(s: String): String = buildString(s.length) {
         s.forEach { c -> if (c.isLetterOrDigit()) append(c.lowercaseChar()) }
     }
+
+    /** `——《書名》` 這種出處行：它是引文的標註，不是被引的文字。 */
+    fun isAttribution(blockquoteLine: String): Boolean = ATTRIBUTION.containsMatchIn(blockquoteLine)
+
+    /** 這一段引文長到值得當成引用來對待嗎（短於此的是術語，不是引文）。 */
+    fun isCitationLength(normalized: String): Boolean = normalized.length >= MIN_QUOTE_CHARS
 }

@@ -91,10 +91,13 @@ so grepping for an application line was hopeless.
 
 `airadar_snapshot_last_success_timestamp_seconds` is the publisher's own
 heartbeat: the epoch second of its last successful snapshot, with
-`airadar_snapshot_failures_total` beside it. The grafana rule
-`bookshelf-echo-snapshot-stale` (nplus-infra) fires when
-`time() - <gauge> > 9000` (2.5 hourly intervals) or when the series disappears
-altogether. It exists because the publisher went silent for 12 hours on
+`airadar_snapshot_failures_total` beside it. `BookshelfEchoSnapshotStale` fires
+when `time() - <gauge> > 9000` (2.5 hourly intervals) or when the series
+disappears altogether. All of this project's alerts now live as one
+`PrometheusRule` in **nplus-gitops**
+(`workloads/monitoring-rules/bookshelf-echo-alerts.yaml`), synced by ArgoCD —
+the old copies under nplus-infra's Grafana provisioning went away with the
+docker Prometheus/Grafana pair (kps is the only monitoring stack now). It exists because the publisher went silent for 12 hours on
 2026-07-19 with the rest of the pipeline healthy, and nothing said so — the
 public dashboard kept serving the last file it had received, so a stale snapshot
 was indistinguishable from a fresh one. The dashboard page now also labels its
