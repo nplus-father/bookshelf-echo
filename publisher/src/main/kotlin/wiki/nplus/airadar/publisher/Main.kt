@@ -35,15 +35,20 @@ fun main() = wiki.nplus.airadar.common.App.main("publisher") {
         val essay = repo.essayByItem(itemId) ?: error("essay message for item $itemId but no essay row")
         val item = repo.findItem(itemId) ?: error("item $itemId not found")
         val digest = repo.digestForItem(itemId)
-        // The retrieval payload carries each book's category and author; the
-        // essayist's own book list does not. Absent (essay from before the
-        // matcher, or a purged match) just means a less groupable frontmatter.
-        val matchBooks = repo.matchFor(itemId)?.booksJson
+        // The retrieval payloads carry each book's category and author; the
+        // essayist's own book list does not. Both halves are passed: a quoted
+        // book often shows up only in `passages` (its chapter was retrieved
+        // without the book itself making the book-level cut). Absent (essay
+        // from before the matcher, or a purged match) just means a less
+        // groupable frontmatter.
+        val match = repo.matchFor(itemId)
         val target = contentDir.resolve("essays/${essay.day}.md")
         Files.createDirectories(target.parent)
         Files.writeString(
             target,
-            EssayRenderer.render(essay, item, digest?.summaryEn, digest?.category, matchBooks),
+            EssayRenderer.render(
+                essay, item, digest?.summaryEn, digest?.category, match?.booksJson, match?.passagesJson,
+            ),
         )
         repo.recordPublish("ESSAY", target.toString(), null, 1, "SUCCESS")
         log.info("published essay {} (item {}): {}", target, itemId, essay.title)

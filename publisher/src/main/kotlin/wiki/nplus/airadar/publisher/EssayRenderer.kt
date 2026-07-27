@@ -22,11 +22,17 @@ import wiki.nplus.airadar.common.ItemRepository
 object EssayRenderer {
 
     /**
-     * [newsCategory] is the digester's label for the news, [matchBooksJson] the
-     * retrieval payload the matcher stored (it carries each book's category and
-     * author, which the essayist's own book list does not). Both are optional:
-     * an essay rendered without them is still valid, just less groupable — the
-     * site treats every one of these fields as optional.
+     * [newsCategory] is the digester's label for the news; [matchBooksJson] and
+     * [matchPassagesJson] are the retrieval payloads the matcher stored — they
+     * carry each book's category and author, which the essayist's own book list
+     * does not.
+     *
+     * Both payloads are consulted because they cover different sets: `books` is
+     * the top-N books by distance, `passages` the chapters that were actually
+     * retrieved. An essay often quotes a book whose chapter surfaced without the
+     * book itself making the book-level cut (2026-07-26: 打敗華爾街). All of it
+     * is optional — an essay rendered without any of it is still valid, just
+     * less groupable.
      */
     fun render(
         essay: ItemRepository.EssayRow,
@@ -34,9 +40,10 @@ object EssayRenderer {
         newsSummary: String? = null,
         newsCategory: String? = null,
         matchBooksJson: String? = null,
+        matchPassagesJson: String? = null,
     ): String {
         val books = Json.parseToJsonElement(essay.booksJson).jsonArray.map { it.jsonObject }
-        val meta = bookMetaBySlug(matchBooksJson)
+        val meta = bookMetaBySlug(matchBooksJson, matchPassagesJson)
         return buildString {
             appendLine("---")
             appendLine("title: ${yaml(essay.title)}")
@@ -90,14 +97,20 @@ object EssayRenderer {
      * top of an essay that is already written and paid for — it must never be
      * the reason a publish fails.
      */
-    private fun bookMetaBySlug(matchBooksJson: String?): Map<String, JsonObject> {
-        if (matchBooksJson.isNullOrBlank()) return emptyMap()
-        val array = runCatching { Json.parseToJsonElement(matchBooksJson).jsonArray }.getOrNull() ?: return emptyMap()
-        return array.mapNotNull { element ->
-            val o = runCatching { element.jsonObject }.getOrNull() ?: return@mapNotNull null
-            val slug = bookSlug(o) ?: return@mapNotNull null
-            slug to o
-        }.toMap()
+    private fun bookMetaBySlug(vararg payloads: String?): Map<String, JsonObject> {
+        val meta = mutableMapOf<String, JsonObject>()
+        payloads.forEach { payload ->
+            if (payload.isNullOrBlank()) return@forEach
+            val array = runCatching { Json.parseToJsonElement(payload).jsonArray }.getOrNull() ?: return@forEach
+            array.forEach { element ->
+                val o = runCatching { element.jsonObject }.getOrNull() ?: return@forEach
+                val slug = bookSlug(o) ?: return@forEach
+                // 先到先贏：呼叫端把 books 排在 passages 之前，書層的 metadata
+                // 比章節層的更貼近「這本書是什麼」。
+                meta.putIfAbsent(slug, o)
+            }
+        }
+        return meta
     }
 
     /** book_id (== library slug) if present, else the slug prefix of chapter_id. */

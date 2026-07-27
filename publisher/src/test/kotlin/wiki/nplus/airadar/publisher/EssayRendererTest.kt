@@ -97,6 +97,20 @@ class EssayRendererTest {
     }
 
     @Test
+    fun `a book quoted from a passage still gets its metadata`() {
+        // 引用的書常常只出現在 passages：章節被檢索到了，書本身卻沒擠進書層的
+        // top-N（2026-07-26 的《打敗華爾街》就是）。
+        val md = EssayRenderer.render(
+            essay("""[{"book_id":"beating-the-street","book_title":"打敗華爾街","chapter_id":"beating-the-street:c17","chapter_title":"Ch"}]"""),
+            item(),
+            matchBooksJson = """[{"book_id":"enough","category":"finance"}]""",
+            matchPassagesJson = """[{"book_id":"beating-the-street","category":"finance","author":"Peter Lynch"}]""",
+        )
+        assertTrue(md.contains("    category: \"finance\""))
+        assertTrue(md.contains("    author: \"Peter Lynch\""))
+    }
+
+    @Test
     fun `a malformed match payload costs decoration, never the publish`() {
         val md = EssayRenderer.render(
             essay("""[{"book_id":"enough","book_title":"夠了","chapter_id":"enough:c1","chapter_title":"成本"}]"""),
