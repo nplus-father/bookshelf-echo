@@ -34,6 +34,18 @@ class GeminiClientTest {
     }
 
     @Test
+    fun `thinking tokens count as output — they are billed as output`() {
+        // 3.x 系列的主要開銷在 thoughtsTokenCount，而它不在 candidatesTokenCount
+        // 裡。少加這一項，帳本會低估到讓每日預算的斷路器形同虛設。
+        val body = sampleResponse.replace(
+            """"candidatesTokenCount": 150""",
+            """"candidatesTokenCount": 150, "thoughtsTokenCount": 900""",
+        )
+        val result = client().parseResponse(body, "gemini-test")
+        assertEquals(1050, result.outputTokens)
+    }
+
+    @Test
     fun `score outside 1-5 is clamped`() {
         val body = sampleResponse.replace("\\\"significance_score\\\": 4", "\\\"significance_score\\\": 9")
         assertEquals(5, client().parseResponse(body, "gemini-test").significanceScore)

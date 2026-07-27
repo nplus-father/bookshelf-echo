@@ -35,6 +35,13 @@ class GeminiClient(
     private val inputUsdPerMTok: Double = Config.double("LLM_INPUT_USD_PER_MTOK", 0.30),
     private val outputUsdPerMTok: Double = Config.double("LLM_OUTPUT_USD_PER_MTOK", 2.50),
 ) : LlmClient {
+    /**
+     * 2.5 系列吃低溫吃得很好（0.2 讓 JSON 輸出穩定）；3.x 系列 Google 明講不要
+     * 壓低取樣溫度，壓了反而更容易重複、繞圈。所以預設跟著模型世代走，
+     * LLM_TEMPERATURE 仍可一次覆寫全部。
+     */
+    private val temperature: Double =
+        Config.double("LLM_TEMPERATURE", if (model.startsWith("gemini-3")) 1.0 else 0.2)
     // Lazy so that construction (and pure parse tests) never require the key.
     private val apiKey by lazy { Config.str("GEMINI_API_KEY") }
 
@@ -64,7 +71,7 @@ class GeminiClient(
             }
             putJsonObject("generationConfig") {
                 put("responseMimeType", "application/json")
-                put("temperature", 0.2)
+                put("temperature", temperature)
             }
         }
         val request = HttpRequest.newBuilder(
@@ -326,10 +333,17 @@ class GeminiClient(
             error("Gemini output was not valid JSON${reasonSuffix(finishReason, null)}: ${text.trim().take(300)}")
         }
         val usage = root["usageMetadata"]?.jsonObject
+        // thinking tokens 按 output 價計費，卻不算在 candidatesTokenCount 裡。
+        // 在 2.5 系列上這一項通常是 0，到了 3.x 它是主要開銷：實測
+        // gemini-3.1-pro-preview 回一句話用了 38 個答案 token、335 個 thought
+        // token——只記前者，帳本會低估九成，而 DAILY_LLM_BUDGET_USD 這個斷路器
+        // 正是靠帳本判斷該不該停。ADR-011 的超支就是漏記帳來的。
+        val answerTokens = usage?.get("candidatesTokenCount")?.jsonPrimitive?.int ?: 0
+        val thoughtTokens = usage?.get("thoughtsTokenCount")?.jsonPrimitive?.int ?: 0
         return Payload(
             obj = obj,
             inputTokens = usage?.get("promptTokenCount")?.jsonPrimitive?.int ?: 0,
-            outputTokens = usage?.get("candidatesTokenCount")?.jsonPrimitive?.int ?: 0,
+            outputTokens = answerTokens + thoughtTokens,
         )
     }
 
