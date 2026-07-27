@@ -23,18 +23,24 @@ METRIC_FILE="$TEXTFILE_DIR/site-publish.prom"
 fails=0
 foreign=0
 deploy_fails=0
+metrics_fails=0
 # 容器重啟不該讓「上次成功」歸零：0 會讓 time()-0 變成 56 年，alert 立刻誤報。
 last_ok=0
 last_push=0
 last_deploy_match=0
+last_metrics_push=0
 if [ -f "$METRIC_FILE" ]; then
   last_ok=$(awk '$1=="site_publish_last_success_timestamp_seconds"{print int($2)}' "$METRIC_FILE" 2>/dev/null || true)
   last_push=$(awk '$1=="site_publish_last_push_timestamp_seconds"{print int($2)}' "$METRIC_FILE" 2>/dev/null || true)
   last_deploy_match=$(awk '$1=="site_deploy_last_match_timestamp_seconds"{print int($2)}' "$METRIC_FILE" 2>/dev/null || true)
+  last_metrics_push=$(awk '$1=="site_metrics_last_push_timestamp_seconds"{print int($2)}' "$METRIC_FILE" 2>/dev/null || true)
 fi
 [ -n "${last_ok:-}" ] || last_ok=0
 [ -n "${last_push:-}" ] || last_push=0
 [ -n "${last_deploy_match:-}" ] || last_deploy_match=0
+[ -n "${last_metrics_push:-}" ] || last_metrics_push=0
+# 同 last_deploy_match：第一輪成功前給一段寬限，否則指標剛上線就是 0。
+[ "$last_metrics_push" -gt 0 ] || last_metrics_push=$(date +%s)
 # last_ok 不同，它在第一輪成功時就會被填上；last_deploy_match 只有在線上站台
 # 真的追上 origin/main 那一刻才動，而剛上線這個指標時 version.json 還沒被任何
 # 一次 build 寫出去。0 會讓 alert 在部署當下就誤報，所以冷啟動先給一個門檻的
@@ -54,6 +60,15 @@ emit() {
     echo '# HELP site_publish_last_push_timestamp_seconds 最後一次真的把 commit 推上 origin'
     echo '# TYPE site_publish_last_push_timestamp_seconds gauge'
     echo "site_publish_last_push_timestamp_seconds $last_push"
+    # dashboard 的資料現在走 data branch。它停掉時站台看起來完全正常——文章照
+    # 出、頁面照建，只有那一頁的數字停在某個時刻，而過期的快照長得跟健康的
+    # 一模一樣。所以這條也要有聲音。
+    echo '# HELP site_metrics_last_push_timestamp_seconds 最後一次把 metrics 快照推上 data branch'
+    echo '# TYPE site_metrics_last_push_timestamp_seconds gauge'
+    echo "site_metrics_last_push_timestamp_seconds $last_metrics_push"
+    echo '# HELP site_metrics_consecutive_failures 連續幾輪推不上 data branch（0 = 上一輪成功）'
+    echo '# TYPE site_metrics_consecutive_failures gauge'
+    echo "site_metrics_consecutive_failures $metrics_fails"
     echo '# HELP site_publish_foreign_files 工作副本裡不屬於本容器 uid、因而改寫不了的檔案數'
     echo '# TYPE site_publish_foreign_files gauge'
     echo "site_publish_foreign_files $foreign"
@@ -76,7 +91,50 @@ emit() {
   return 0
 }
 
-echo "site-publisher: syncing /src -> /repo/{content,public} every ${INTERVAL}s"
+# metrics 快照送到獨立的 data branch，不進 main。
+#
+# 原因是 build 頻率：快照每小時換一次，內容一天才換一次。兩者一起進 main 的
+# 那段期間，site repo 每天 27 個 commit、27 輪 GitHub Actions + Pages
+# deploy，其中 26 輪沒有任何文章變動——git log 看不出哪天發了文，而 2026-07-25
+# 那種 deploy-pages 卡死的故障，暴露面也跟著放大 27 倍。
+#
+# data branch 不被 deploy.yml（on: push branches: [main]）監聽，所以推它不會
+# 觸發 build；dashboard 改成在瀏覽器裡抓 raw.githubusercontent 上的這一份。
+#
+# 全程用 plumbing（hash-object / mktree / commit-tree），一個字都不寫進 /repo
+# 的工作區——那是 host 的 checkout，切 branch 會把它攪亂。每輪重寫成單一
+# orphan commit：快照沒有歷史價值（DB 才是真相），留著只會讓 repo 一年多出
+# 八千個 commit。
+publish_metrics() {
+  [ -d /src/data/metrics ] || return 0
+  entries=""
+  for f in /src/data/metrics/*.json; do
+    [ -f "$f" ] || continue
+    blob=$(git hash-object -w "$f" 2>/dev/null) || return 1
+    entries="${entries}100644 blob ${blob}	$(basename "$f")
+"
+  done
+  [ -n "$entries" ] || return 0
+  inner=$(printf '%s' "$entries" | git mktree) || return 1
+  root=$(printf '040000 tree %s\tmetrics\n' "$inner" | git mktree) || return 1
+
+  # 內容一模一樣就不推：raw 的 CDN 快取以 commit 為準，重推只是多一次沒有意義
+  # 的寫入。
+  if git fetch -q "$REPO_URL" data 2>/dev/null; then
+    prev=$(git rev-parse FETCH_HEAD 2>/dev/null || echo "")
+    [ -n "$prev" ] && [ "$(git rev-parse "$prev^{tree}" 2>/dev/null)" = "$root" ] && return 0
+  fi
+
+  commit=$(git commit-tree "$root" -m "data: metrics snapshot $(date -u +%FT%TZ)") || return 1
+  # --force：每輪都是 orphan commit，不接在前一個後面，所以一定不是 fast-forward。
+  out=$(git push --force "$REPO_URL" "$commit:refs/heads/data" 2>&1) || {
+    echo "metrics push FAILED at $(date -u +%FT%TZ): $(echo "$out" | sed "s|${SITE_GIT_TOKEN}|***|g" | tail -2)"
+    return 1
+  }
+  return 0
+}
+
+echo "site-publisher: syncing /src -> /repo/content (main) + metrics (data branch) every ${INTERVAL}s"
 
 while true; do
   cd /repo
@@ -137,14 +195,14 @@ while true; do
     fi
   fi
 
-  mkdir -p /repo/content/daily /repo/content/weekly /repo/content/essays /repo/public/data/metrics
+  mkdir -p /repo/content/daily /repo/content/weekly /repo/content/essays
   cp -r /src/daily/. /repo/content/daily/ 2>/dev/null || true
   cp -r /src/weekly/. /repo/content/weekly/ 2>/dev/null || true
   cp -r /src/essays/. /repo/content/essays/ 2>/dev/null || true
-  # metrics snapshot 走 public/ 而非 content/：content/ 只被 Astro 的 markdown
-  # collection glob 掃（*.md），JSON 放進去不會被輸出；public/ 會原樣複製進 dist/，
-  # 這樣 dashboard 才 fetch 得到 /data/metrics/latest.json。
-  cp -r /src/data/metrics/. /repo/public/data/metrics/ 2>/dev/null || true
+  # metrics 已經不進 main（見 publish_metrics）。舊 commit 留下來的那份要清掉，
+  # 否則 dashboard 在 build 時會讀到一份永遠停在搬家那一刻的快照——那正是這一頁
+  # 最不該有的東西。刪除本身也是一次內容變更，跟著下面的 commit 一起走。
+  rm -rf /repo/public/data/metrics 2>/dev/null || true
   git add -A
   if ! git diff --cached --quiet; then
     git commit -q -m "content: auto-publish $(date -u +%FT%TZ)"
@@ -167,6 +225,16 @@ while true; do
     # 那不該讓 alert 誤判成停更。last_ok 記的是「這條路走得通」，不是「有東西送出去」。
     last_ok=$(date +%s)
     fails=0
+  fi
+
+  # 一定要在上面用完 FETCH_HEAD 之後才做：publish_metrics 會去 fetch data
+  # branch，把 FETCH_HEAD 換掉。
+  if publish_metrics; then
+    last_metrics_push=$(date +%s)
+    metrics_fails=0
+  else
+    metrics_fails=$((metrics_fails + 1))
+    echo "metrics sync FAILED at $(date -u +%FT%TZ)（連續第 ${metrics_fails} 次）"
   fi
   emit
   sleep "$INTERVAL"
