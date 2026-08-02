@@ -148,6 +148,10 @@ while true; do
   # 先跟上 origin/main — repo 若在別處被 push 過（renovate、手動 fix），
   # 不 rebase 的 push 會 non-fast-forward 永久失敗（2026-07-12 起的停更事故）。
   if git fetch -q "$REPO_URL" main && git rebase -q FETCH_HEAD; then
+    # 用 URL（而非 remote name）fetch/push 時 git 不更新 refs/remotes/origin/*，
+    # host 上這個 checkout 的 git status 會把早已推上去的 commit 一路累積成
+    # 「ahead 幾百」的假象（2026-08-02 查到 ahead 134）——tracking ref 要自己對齊。
+    git update-ref refs/remotes/origin/main FETCH_HEAD 2>/dev/null || true
     foreign=0
   else
     git rebase --abort 2>/dev/null || true
@@ -212,6 +216,7 @@ while true; do
   if [ "$(git rev-list --count FETCH_HEAD..HEAD)" -gt 0 ]; then
     if out=$(git push "$REPO_URL" HEAD:main 2>&1); then
       echo "pushed at $(date -u +%FT%TZ)"
+      git update-ref refs/remotes/origin/main HEAD 2>/dev/null || true
       last_push=$(date +%s)
       last_ok="$last_push"
       fails=0
