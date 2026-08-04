@@ -90,3 +90,27 @@ Decisions taken:
 This trades a cheap-but-useless gate for a slightly-costlier-but-effective one.
 The failure mode it prevents is not overspending: it is publishing an essay
 that earnestly argues a resonance that does not exist.
+
+## Second amendment (2026-08-04): the door decision #3 left open is now closed
+
+Decision #3 said any new automatic signal must first pass a 30-label test. One
+was proposed — an isolated theme vector, embedding only each book's 深度概覽
+instead of the diluted book text — and it has now been run. It failed:
+genuine-vs-coincidence gaps of 0.0057 (top-1) and 0.0035 (margin) against
+within-group spreads two orders of magnitude larger, and no cut beating the raw
+index. Full numbers, likely cause, and an honest account of how the labels were
+produced: `docs/experiments/theme-index/RESULT.md`.
+
+Three signals have now died the same way — absolute distance, top1–top2 margin,
+theme-only distance. The cause looks structural rather than incidental:
+distance over a 1,400-book general library measures shelf density around a
+topic, and that is a property of the shelf, not of the news. **Stop buying the
+next automatic signal on spec.** Decision #3's 30-label bar stands, but the
+prior going in should now be that it will fail.
+
+For the design as it stands: the LLM relevance judge is the gate, full stop,
+and the matcher is an evidence stage whose distance cutoff is a coarse trash
+filter — the code has said so since `446f26d`. The cost motive that made a
+pre-LLM signal attractive was met the same day from a different direction:
+DIGEST got its own model tier ($0.0174 → $0.0063 an item), no new signal
+required.

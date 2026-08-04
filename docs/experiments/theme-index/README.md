@@ -60,19 +60,23 @@ Columns: `id | title | query_text_1500`. `query_text_1500` = `title + "\n" +
 extracted_text`, truncated to 1500 chars — mirrors the matcher's live query
 (`MATCH_QUERY_CHARS=1500`, `input_type=query`).
 
-## Status (2026-08-04): everything except the labels is done
+## Status (2026-08-04): DONE — null result, see `RESULT.md`
 
-`theme-index-distances.tsv` is checked in — steps 2 and 3 below have been run.
-What remains is step 1 (the labels) and step 4 (scoring), and step 4 is one
-command once step 1 is filled in.
+All four steps have been run. The theme vector discriminates no better than the
+raw one. `label-sheet.tsv` is filled in and checked in; `RESULT.md` has the
+numbers, the likely cause, and an honest account of how the labels were
+produced.
+
+To re-derive the tally (runs on the dev machine — it only reads two TSVs, no DB
+and no Voyage calls; one line, the shell eats backslash continuations when
+pasted):
 
 ```bash
-# on nplus.space, in book-library-hub — the offline copy is kept at
-# /mnt/data/theme-index-exp.db (1381 theme vectors, do not delete until scored)
-node scripts/experiments/theme-index-verdict.mjs \
-  --labels  <this dir>/label-sheet.tsv \
-  --distances <this dir>/theme-index-distances.tsv
+cd ~/workspace/book-library-hub && node scripts/experiments/theme-index-verdict.mjs --labels ~/workspace/andrew/apps/bookshelf-echo/docs/experiments/theme-index/label-sheet.tsv --distances ~/workspace/andrew/apps/bookshelf-echo/docs/experiments/theme-index/theme-index-distances.tsv
 ```
+
+Rebuilding the vectors themselves (`theme-index.mjs --build --score`) does need
+prod: the offline DB copy is at `nplus.space:/mnt/data/theme-index-exp.db`.
 
 Two things to know when reading the distances:
 
