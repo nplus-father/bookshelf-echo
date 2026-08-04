@@ -75,12 +75,21 @@ interface LlmClient {
             )
         }
 
+        /**
+         * The one tier that needs its own timeout: the essay prompt carries
+         * three chapters in full, and the 2026-08 measurement on
+         * `gemini-3.1-pro-preview` was 57.3s against the 60s default — three
+         * days in a week lost the column to a timeout, not to a fault. 180s is
+         * three times the observed latency, and the day still ends either way
+         * (the job runs once, after ESSAY_HOUR_UTC).
+         */
         fun essayistFromEnv(http: HttpClient): LlmClient = gemini(http) {
             GeminiClient(
                 it,
                 model = Config.str("ESSAY_MODEL", "gemini-2.5-pro"),
                 inputUsdPerMTok = Config.double("ESSAY_INPUT_USD_PER_MTOK", 1.25),
                 outputUsdPerMTok = Config.double("ESSAY_OUTPUT_USD_PER_MTOK", 10.00),
+                timeoutSeconds = Config.int("ESSAY_TIMEOUT_SECONDS", 180),
             )
         }
 

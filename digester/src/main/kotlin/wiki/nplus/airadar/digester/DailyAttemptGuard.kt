@@ -34,4 +34,20 @@ class DailyAttemptGuard(private val maxPerDay: Int) {
         used++
         return true
     }
+
+    /**
+     * Give one attempt back — for a failure that never reached a verdict, so
+     * charging the day for it caps the wrong thing (2026-08-03: three transport
+     * timeouts spent the whole day's attempts without the model ever answering,
+     * and the column went missing for a fault that was not ours).
+     *
+     * Deliberately NOT the general error path: the failure this guard exists to
+     * stop is the one that keeps re-billing us, and that one always "fails"
+     * too. Callers must bound how often they refund — a refund that is always
+     * granted is no guard at all. A refund for any day but the current one is
+     * ignored, so a late one cannot hand today free attempts.
+     */
+    fun refund(today: LocalDate) {
+        if (day == today && used > 0) used--
+    }
 }

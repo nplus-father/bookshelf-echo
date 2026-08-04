@@ -13,8 +13,10 @@ import wiki.nplus.airadar.common.LibraryClient
 import wiki.nplus.airadar.common.QuoteVerifier
 import wiki.nplus.airadar.common.Rabbit
 import wiki.nplus.airadar.common.RabbitTopology
+import wiki.nplus.airadar.common.RetryableFailure
 import wiki.nplus.airadar.common.StageMessage
 import java.time.Instant
+import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 
@@ -56,6 +58,15 @@ class EssayistJob(
     private val maxJudged = Config.int("ESSAY_JUDGE_MAX_CANDIDATES", 3)
     private val dailyBudgetUsd = Config.double("DAILY_LLM_BUDGET_USD", 0.50)
     private val attempts = DailyAttemptGuard(Config.int("DAILY_JOB_MAX_ATTEMPTS", 3))
+    /**
+     * 逾時退還嘗試（2026-08-03），但退還本身也要記帳：一次逾時代表模型很可能
+     * 已經生成完畢、只是我們沒等到，錢照付而帳本記不到（沒有回應就沒有
+     * usageMetadata）。所以無上限的退還等於繞過 DAILY_JOB_MAX_ATTEMPTS。
+     * 最壞情況是 3 次嘗試 + 2 次退還 = 5 次呼叫，DAILY_LLM_BUDGET_USD 仍是硬底線。
+     */
+    private val timeoutRefunds = DailyAttemptGuard(Config.int("DAILY_JOB_MAX_TIMEOUT_REFUNDS", 2))
+    /** 已經為哪一天喊過 stand-down —— 每個 tick 重喊會讓一次失敗被計成十幾次。 */
+    private var standDownDay: LocalDate? = null
     private fun outcome(name: String) = registry.counter("airadar_essay_runs_total", "outcome", name)
 
     /**
@@ -102,11 +113,31 @@ class EssayistJob(
         // done" until the very end — so a failure in between comes straight back
         // on the next tick and pays again. Cap how often that can happen.
         if (!attempts.tryConsume(day)) {
-            outcome("attempts_exhausted").increment()
-            log.error("essay {}: attempts exhausted, standing down until tomorrow (or a restart)", day)
+            // 只在進入 stand-down 的那一刻計一次。這個分支每 5 分鐘會再走一遍，
+            // 原本每遍都 increment，一次失敗在告警上被算成 19 次（TODO #23）。
+            if (standDownDay != day) {
+                standDownDay = day
+                outcome("attempts_exhausted").increment()
+                log.error("essay {}: attempts exhausted, standing down until tomorrow (or a restart)", day)
+            }
             return
         }
 
+        try {
+            compose(day, candidates)
+        } catch (e: RetryableFailure) {
+            // 沒等到答案不算用掉一次嘗試 —— 但退還額度自己有上限（見
+            // timeoutRefunds），否則一個持續逾時的上游可以無限重試、無限計費。
+            if (e.timedOut && timeoutRefunds.tryConsume(day)) {
+                attempts.refund(day)
+                outcome("timeout_refunded").increment()
+                log.warn("essay {}: 逾時，退還這次嘗試（下一個 tick 重試）: {}", day, e.message)
+            }
+            throw e
+        }
+    }
+
+    private fun compose(day: LocalDate, candidates: List<ItemRepository.EssayCandidate>) {
         // The relevance judge (cheap tier) runs BEFORE the essay: vector
         // distance measures library density, not relatedness (2026-07-16 live
         // calibration), so a keyword coincidence must be caught here — an

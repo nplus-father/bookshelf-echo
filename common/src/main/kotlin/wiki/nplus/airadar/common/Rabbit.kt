@@ -13,8 +13,19 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import kotlin.system.exitProcess
 
-/** A failure worth retrying via the ladder: network timeouts, 5xx, 429. */
-class RetryableFailure(message: String, cause: Throwable? = null) : Exception(message, cause)
+/**
+ * A failure worth retrying via the ladder: network timeouts, 5xx, 429.
+ *
+ * [timedOut] marks the subset where the call never reached a verdict — we did
+ * not wait long enough, as opposed to the provider answering with a fault. The
+ * retry ladder treats both the same; the daily jobs do not (a timeout must not
+ * spend one of the day's attempts — see `EssayistJob`).
+ */
+class RetryableFailure(
+    message: String,
+    cause: Throwable? = null,
+    val timedOut: Boolean = false,
+) : Exception(message, cause)
 
 /**
  * The daily LLM budget is spent (design doc §3.4). Not a fault: the message

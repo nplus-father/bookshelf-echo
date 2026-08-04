@@ -34,7 +34,18 @@ class GeminiClient(
     override val model: String = Config.str("GEMINI_MODEL", "gemini-2.5-flash"),
     private val inputUsdPerMTok: Double = Config.double("LLM_INPUT_USD_PER_MTOK", 0.30),
     private val outputUsdPerMTok: Double = Config.double("LLM_OUTPUT_USD_PER_MTOK", 2.50),
+    /**
+     * 逾時跟著層級走，不是一個全域數字。各層的實測延遲差一個數量級：JUDGE 約
+     * 13 秒、DIGEST 約 12 秒，而 ESSAY 把三本書的章節全文塞進 prompt、跑在
+     * 3.x pro 上，2026-08-04 量到 57.3 秒 —— 對著同一個 60 秒天花板。
+     * 2026-07-28 起 essay 延遲從 ~40 秒一路爬到 ~57 秒，07-31 / 08-02 / 08-03
+     * 三次撞穿（連三次逾時就燒光當日重試，整天沒有專欄）。便宜的層級留 60 秒，
+     * 貴的那層自己給足餘裕，見 [LlmClient.essayistFromEnv]。
+     */
+    timeoutSeconds: Int = Config.int("LLM_TIMEOUT_SECONDS", 60),
 ) : LlmClient {
+    private val timeout: Duration = Duration.ofSeconds(timeoutSeconds.toLong())
+
     /**
      * 2.5 系列吃低溫吃得很好（0.2 讓 JSON 輸出穩定）；3.x 系列 Google 明講不要
      * 壓低取樣溫度，壓了反而更容易重複、繞圈。所以預設跟著模型世代走，
@@ -78,7 +89,7 @@ class GeminiClient(
         val request = HttpRequest.newBuilder(
             URI.create("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"),
         )
-            .timeout(Duration.ofSeconds(60))
+            .timeout(timeout)
             .header("Content-Type", "application/json")
             .header("x-goog-api-key", apiKey)
             .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
@@ -86,6 +97,10 @@ class GeminiClient(
 
         val response = try {
             http.send(request, HttpResponse.BodyHandlers.ofString())
+        } catch (e: java.net.http.HttpTimeoutException) {
+            // 逾時與其他 IO 錯誤分開標記：呼叫端要分得出「模型給了壞答案」與
+            // 「我們沒等到答案」——後者不該用掉當日的重試額度（EssayistJob）。
+            throw RetryableFailure("Gemini request failed: ${e.message}", e, timedOut = true)
         } catch (e: java.io.IOException) {
             throw RetryableFailure("Gemini request failed: ${e.message}", e)
         }
