@@ -32,7 +32,15 @@ class CuratorJob(
 ) {
     private val log = LoggerFactory.getLogger(CuratorJob::class.java)
     private val selectHourUtc = Config.int("SELECT_HOUR_UTC", 21)
-    private val maxPicks = Config.int("SHORTLIST_MAX_PER_DAY", 3)
+    // 2 rather than 3 since 2026-08-04: the essayist composes at most one a day
+    // and SHORTLIST_TTL_DAYS expires the rest, so the third pick was
+    // structurally unusable. The ledger that day: 29 picked over ten days, 8
+    // became essays, and 22 of the 37 unused rows were already past the TTL —
+    // shortlist looked like a queue and was behaving as a bin. Two keeps a real
+    // alternative for the day the judge rejects the first, without asking the
+    // curator to invent a reason for a slot nobody can fill. It saves no money:
+    // SELECT is one call whatever this number is.
+    private val maxPicks = Config.int("SHORTLIST_MAX_PER_DAY", 2)
     private val minScore = Config.int("SELECT_MIN_SCORE", 3)
     private val dailyBudgetUsd = Config.double("DAILY_LLM_BUDGET_USD", 0.50)
     private val attempts = DailyAttemptGuard(Config.int("DAILY_JOB_MAX_ATTEMPTS", 3))
