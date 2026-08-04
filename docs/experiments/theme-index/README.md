@@ -60,6 +60,32 @@ Columns: `id | title | query_text_1500`. `query_text_1500` = `title + "\n" +
 extracted_text`, truncated to 1500 chars — mirrors the matcher's live query
 (`MATCH_QUERY_CHARS=1500`, `input_type=query`).
 
+## Status (2026-08-04): everything except the labels is done
+
+`theme-index-distances.tsv` is checked in — steps 2 and 3 below have been run.
+What remains is step 1 (the labels) and step 4 (scoring), and step 4 is one
+command once step 1 is filled in.
+
+```bash
+# on nplus.space, in book-library-hub — the offline copy is kept at
+# /mnt/data/theme-index-exp.db (1381 theme vectors, do not delete until scored)
+node scripts/experiments/theme-index-verdict.mjs \
+  --labels  <this dir>/label-sheet.tsv \
+  --distances <this dir>/theme-index-distances.tsv
+```
+
+Two things to know when reading the distances:
+
+- They were computed against the **2026-08-04 index** (1,407 books), not the
+  one frozen on 07-17, so `raw_top1_book` often differs from the `top3_books`
+  recorded in `label-sheet.tsv`. This does not invalidate the labels: the
+  question they answer is "does the *bookshelf* have something to say", not
+  "are these three particular books relevant". Both indexes in the comparison
+  are the same vintage, which is what the comparison needs.
+- Theme distances sit systematically further out than raw ones (30-item mean
+  0.9953 vs 0.9734). Absolute position means nothing here — only whether the
+  genuine and coincidence groups separate.
+
 ## Protocol (run in book-library-hub, on a scratch copy of library.db)
 
 1. Label the 30 (above).
