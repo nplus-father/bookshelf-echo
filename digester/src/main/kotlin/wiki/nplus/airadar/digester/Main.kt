@@ -4,6 +4,7 @@ import org.slf4j.LoggerFactory
 import wiki.nplus.airadar.common.BudgetExhausted
 import wiki.nplus.airadar.common.Config
 import wiki.nplus.airadar.common.Db
+import wiki.nplus.airadar.common.Freshness
 import wiki.nplus.airadar.common.ItemRepository
 import wiki.nplus.airadar.common.ItemState
 import wiki.nplus.airadar.common.Rabbit
@@ -69,17 +70,17 @@ fun main() = wiki.nplus.airadar.common.App.main("digester") {
         // items would starve fresh ones and we'd write commentary off week-old
         // news. Drop anything past the cutoff to STALE, terminal, at zero cost —
         // checked BEFORE the cap so stale items drain out of the retry cycle
-        // instead of re-parking and blocking the queue behind them. Clock is
-        // the news's own date, received_at only as a fallback.
-        if (maxAgeDays > 0) {
-            val reference = (item.publishedAt ?: item.receivedAt).toInstant()
-            val ageDays = java.time.Duration.between(reference, java.time.Instant.now()).toDays()
-            if (ageDays > maxAgeDays) {
-                if (repo.transition(itemId, ItemState.MATCHED, ItemState.STALE)) {
-                    log.info("item {} STALE ({} days old): {}", itemId, ageDays, item.title)
-                }
-                return@consume
+        // instead of re-parking and blocking the queue behind them.
+        //
+        // The matcher now asks the same question one stop earlier, so most stale
+        // items never reach here. This check stays for the ones already sitting
+        // in digest.q — they were fresh when they were published to it.
+        val now = java.time.Instant.now()
+        if (Freshness.isStale(item, now, maxAgeDays)) {
+            if (repo.transition(itemId, ItemState.MATCHED, ItemState.STALE)) {
+                log.info("item {} STALE ({} days old): {}", itemId, Freshness.ageDays(item, now), item.title)
             }
+            return@consume
         }
 
         // Daily selection cap: digest at most N items/day so the spend goes to a
