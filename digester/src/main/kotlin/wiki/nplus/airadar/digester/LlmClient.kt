@@ -66,6 +66,33 @@ interface LlmClient {
 
         fun fromEnv(http: HttpClient): LlmClient = gemini(http) { GeminiClient(it) }
 
+        /**
+         * The per-item digest: the highest-volume tier (one call per item, ~10 a
+         * day) and the last one that was still inheriting `GEMINI_MODEL`, which
+         * prod sets to pro.
+         *
+         * The 2026-08-04 ledger is why it gets its own: 1,500 output tokens per
+         * item, most of them thinking, at pro rates — $0.018 an item, half of
+         * the pipeline's daily spend. (It looks like a July regression in the
+         * numbers; it isn't. `790f44d` started booking thinking tokens, so the
+         * earlier $0.0045 was simply under-reported. The cost was always this.)
+         *
+         * Summarising an article and scoring it does not need that. ADR-010's
+         * amendment already found the significance score has no discrimination
+         * — nearly everything gets 4/5 — so the expensive part is buying
+         * deliberation for a judgement nobody downstream trusts. The curator
+         * (SELECT) and the essay keep their premium tiers; those are where
+         * quality shows up in the product.
+         */
+        fun digesterFromEnv(http: HttpClient): LlmClient = gemini(http) {
+            GeminiClient(
+                it,
+                model = Config.str("DIGEST_MODEL", "gemini-2.5-flash"),
+                inputUsdPerMTok = Config.double("DIGEST_INPUT_USD_PER_MTOK", 0.30),
+                outputUsdPerMTok = Config.double("DIGEST_OUTPUT_USD_PER_MTOK", 2.50),
+            )
+        }
+
         fun selectorFromEnv(http: HttpClient): LlmClient = gemini(http) {
             GeminiClient(
                 it,

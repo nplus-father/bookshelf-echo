@@ -18,7 +18,7 @@ fun main() = wiki.nplus.airadar.common.App.main("digester") {
     val registry = wiki.nplus.airadar.common.Metrics.start("digester", 9103)
     val repo = ItemRepository(Db.dataSource("digester"))
     val http = HttpClient.newHttpClient()
-    val llm = LlmClient.fromEnv(http)
+    val llm = LlmClient.digesterFromEnv(http)
     val dailyBudgetUsd = Config.double("DAILY_LLM_BUDGET_USD", 0.50)
     val dailyDigestLimit = Config.int("DAILY_DIGEST_LIMIT", 10) // high-value items to digest per UTC day; 0 = unlimited
     val maxAgeDays = Config.long("MATCH_MAX_AGE_DAYS", 3) // news older than this is dropped STALE before spend; 0 = off
