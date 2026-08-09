@@ -1,10 +1,14 @@
 package wiki.nplus.airadar.digester
 
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.net.http.HttpClient
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 
 class GeminiClientTest {
 
@@ -83,6 +87,37 @@ class GeminiClientTest {
     }
 
     @Test
+    fun `an unusable answer still reports the tokens it burned`() {
+        // 2026-08-08: two pro-tier essay attempts died here and the ledger
+        // booked nothing for either, so DAILY_LLM_BUDGET_USD saw a third of
+        // what the night actually cost. Google billed the generation whether
+        // or not we could parse it — the usage has to come out with the throw.
+        val truncated = """{"skip": false, "title_zh": "標題", "essay_md": "開頭就斷"""
+        val body = essayResponse(truncated).replace(
+            """"candidatesTokenCount": 1200""",
+            """"candidatesTokenCount": 1200, "thoughtsTokenCount": 4000""",
+        )
+        val e = assertFailsWith<UnusableResponse> { client().parseEssay(body, "gemini-test") }
+        assertEquals(8000, e.inputTokens)
+        assertEquals(5200, e.outputTokens)
+    }
+
+    @Test
+    fun `a response with no text at all still reports its input cost`() {
+        // A SAFETY block bills the prompt even though no answer comes back.
+        val body = """
+            {
+              "candidates": [{"finishReason": "SAFETY", "content": {"parts": []}}],
+              "promptFeedback": {"blockReason": "SAFETY"},
+              "usageMetadata": {"promptTokenCount": 7000}
+            }
+        """.trimIndent()
+        val e = assertFailsWith<UnusableResponse> { client().parseResponse(body, "gemini-test") }
+        assertEquals(7000, e.inputTokens)
+        assertEquals(0, e.outputTokens)
+    }
+
+    @Test
     fun `cost uses per-mtok rates`() {
         val cost = client().cost(1_000_000, 1_000_000)
         assertEquals(0.30 + 2.50, cost, 1e-9)
@@ -119,6 +154,53 @@ class GeminiClientTest {
     fun `selection missing picks fails fast`() {
         val body = sampleSelection.replace("picks", "choices")
         assertFailsWith<IllegalStateException> { client().parseSelection(body, "gemini-test") }
+    }
+
+    private val sampleBooks = """
+        [{
+          "book_id": "nexus",
+          "title_zh": "連結",
+          "author": "Yuval Noah Harari",
+          "category": "history",
+          "distance": 0.9196,
+          "purchase_url": "https://www.amazon.com/Nexus/dp/059373422X",
+          "guide": "哈拉瑞以資訊網路為主軸，論證資訊量爆炸不會自動帶來智慧。\n\n📘 深度概覽\n## 作者背景\n（省略數百字）",
+          "chapter_titles": ["序章", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "第十章"]
+        }]
+    """.trimIndent()
+
+    @Test
+    fun `selection evidence keeps the pitch and drops the deep overview`() {
+        // 92% of the SELECT prompt was this field and 58% of that was guides —
+        // the tail after the marker elaborates a thesis the first line states.
+        val book = client().trimBooksForSelection(sampleBooks)[0].jsonObject
+        assertEquals(
+            "哈拉瑞以資訊網路為主軸，論證資訊量爆炸不會自動帶來智慧。",
+            book["guide"]?.jsonPrimitive?.content,
+        )
+        assertEquals("連結", book["title_zh"]?.jsonPrimitive?.content)
+        assertEquals(0.9196, book["distance"]?.jsonPrimitive?.content?.toDouble())
+    }
+
+    @Test
+    fun `selection evidence drops the purchase link entirely`() {
+        // Nothing about "could this book frame this news" is answered by an
+        // Amazon URL, and it was 10.7% of the field.
+        assertNull(client().trimBooksForSelection(sampleBooks)[0].jsonObject["purchase_url"])
+    }
+
+    @Test
+    fun `selection evidence caps the chapter list`() {
+        val titles = client().trimBooksForSelection(sampleBooks)[0].jsonObject["chapter_titles"]?.jsonArray
+        assertEquals(8, titles?.size)
+        assertEquals("序章", titles?.first()?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `unreadable evidence costs the run nothing rather than failing it`() {
+        // The curator ranks on title/score too; a malformed books blob should
+        // not take down the day's only selection call.
+        assertEquals(0, client().trimBooksForSelection("{not json").size)
     }
 
     private fun essayResponse(payload: String) = """

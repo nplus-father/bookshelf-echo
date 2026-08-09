@@ -138,6 +138,26 @@ interface LlmClient {
     }
 }
 
+/**
+ * The model answered, Google billed for it, and the answer was unusable — no
+ * text part at all (SAFETY), or a body that would not parse.
+ *
+ * It carries the usage on purpose. [UsageMeter] books nothing when the call
+ * throws, so before this existed a parse failure at the pro tier spent real
+ * money that never reached `llm_usage` — and `DAILY_LLM_BUDGET_USD` reads
+ * `llm_usage`. On 2026-08-08 two essay attempts failed this way and the day's
+ * recorded spend showed only the third: the breaker was measuring a third of
+ * what the night actually cost.
+ *
+ * Still an [IllegalStateException]: to the pipeline this remains a bad answer
+ * that belongs in the DLQ, not a transport fault worth retrying.
+ */
+class UnusableResponse(
+    message: String,
+    val inputTokens: Int,
+    val outputTokens: Int,
+) : IllegalStateException(message)
+
 /** Deterministic stand-in: full pipeline runs, zero spend. Also used by tests. */
 class FakeLlmClient : LlmClient {
     override val model = "fake"

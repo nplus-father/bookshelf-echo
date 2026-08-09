@@ -36,6 +36,10 @@ class UsageMeter(private val repo: ItemRepository, private val registry: MeterRe
             block()
         } catch (e: Throwable) {
             stop(started, purpose, llm.model, "error")
+            // A generation we could not use was still a generation we paid for.
+            // Only [UnusableResponse] carries usage — a timeout or a 5xx has no
+            // billable answer to book, and inventing one would overstate the day.
+            if (e is UnusableResponse) record(itemId, purpose, llm, e.inputTokens, e.outputTokens)
             throw e
         }
         stop(started, purpose, llm.model, "ok")

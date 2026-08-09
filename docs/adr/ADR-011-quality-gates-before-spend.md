@@ -7,6 +7,9 @@
   the "forfeit the day rather than rewrite" rule now allows exactly one
   revision, because the trigger is a string comparison rather than a model's
   score. The rest of this ADR stands.
+- Amended by: [ADR-013](ADR-013-schema-holds-the-shape-and-the-ledger-holds-the-spend.md)
+  — point 3 below closed the write path but not the error path: a call that was
+  billed and then failed to parse still recorded nothing. It does now.
 
 ## Context
 

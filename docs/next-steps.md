@@ -8,6 +8,23 @@ Prod read access (Postgres moved into CNPG on k3s, 2026-07-21):
 ssh nplus.space "kubectl exec -n bookshelf-pg bookshelf-pg-1 -- psql -U postgres -d airadar"
 ```
 
+## P1 — Watch the first nights of schema-constrained output (2026-08-09)
+
+A cost review found the essay tier failing on its own output: two of three
+attempts on 08-08 died on `finishReason=STOP` with unparseable JSON, and because
+`UsageMeter` booked nothing on a throwing call, the ledger showed one pro-tier
+call for a night that bought three. ADR-013 sends a `responseSchema` on every
+tier, books usage out of the failure path, and strips the `SELECT` prompt down
+to the evidence the ranking reads (20k → ~4k input tokens).
+
+- [ ] `airadar_llm_latency_seconds_count{purpose="ESSAY",outcome="error"}` should
+      fall to ~0. If it doesn't, the failures were never an escaping problem.
+- [ ] Recorded daily spend will *rise* without anything new being bought —
+      previously-invisible failures now reach `llm_usage`. Compare the day total
+      against the ~$0.21/day baseline, not against last week's ledger.
+- [ ] Read a few nights of picks: the curator no longer sees the tail of each
+      `guide`. If selection quality drops, put the guide back before anything else.
+
 ## Resolved — the essay path has produced daily since 2026-07-20
 
 The critic-gate bug below was fixed in `8499665` (ADR-011) and the pool

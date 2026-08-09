@@ -1,9 +1,11 @@
 package wiki.nplus.airadar.digester
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -57,22 +59,22 @@ class GeminiClient(
     private val apiKey by lazy { Config.str("GEMINI_API_KEY") }
 
     override fun digest(source: String, title: String, url: String, text: String?): DigestResult =
-        parseResponse(generate(buildDigestPrompt(source, title, url, text)), model)
+        parseResponse(generate(buildDigestPrompt(source, title, url, text), DIGEST_SCHEMA), model)
 
     override fun select(candidates: List<ItemRepository.SelectionCandidate>, maxPicks: Int): SelectResult =
-        parseSelection(generate(buildSelectPrompt(candidates, maxPicks)), model)
+        parseSelection(generate(buildSelectPrompt(candidates, maxPicks), SELECT_SCHEMA), model)
 
     override fun essay(
         candidate: ItemRepository.EssayCandidate,
         chapters: List<LlmClient.ChapterExcerpt>,
         unverifiedQuotes: List<String>,
     ): EssayResult =
-        parseEssay(generate(buildEssayPrompt(candidate, chapters, unverifiedQuotes)), model)
+        parseEssay(generate(buildEssayPrompt(candidate, chapters, unverifiedQuotes), ESSAY_SCHEMA), model)
 
     override fun judge(candidate: ItemRepository.EssayCandidate): JudgeResult =
-        parseJudge(generate(buildJudgePrompt(candidate)), model)
+        parseJudge(generate(buildJudgePrompt(candidate), JUDGE_SCHEMA), model)
 
-    private fun generate(prompt: String): String {
+    private fun generate(prompt: String, schema: JsonObject): String {
         val body = buildJsonObject {
             putJsonArray("contents") {
                 add(
@@ -83,6 +85,15 @@ class GeminiClient(
             }
             putJsonObject("generationConfig") {
                 put("responseMimeType", "application/json")
+                // responseMimeType alone only *asks* for JSON — the decoder is
+                // still free-running, and on a long essay_md full of Markdown,
+                // newlines and quotes it does get the escaping wrong: 2026-08-08
+                // lost two of the day's three attempts to `finishReason=STOP`
+                // with an unparseable body (the model thought it was done). A
+                // schema constrains decoding itself, so the bytes cannot come
+                // back malformed. Every tier gets one — the essay is merely
+                // where the failure was expensive enough to notice.
+                put("responseSchema", schema)
                 put("temperature", temperature)
             }
         }
@@ -139,6 +150,45 @@ class GeminiClient(
         ${text?.let { "Content:\n${it.take(12000)}" } ?: "Content: (not available — judge from the title only, and score conservatively)"}
     """.trimIndent()
 
+    /**
+     * The bookshelf evidence, cut down to what the ranking actually reads.
+     *
+     * `matches.books` is stored for the whole pipeline, not for this prompt. It
+     * carries a purchase URL, the complete chapter list, and a `guide` whose
+     * tail is an entire 深度概覽 — and eight books ride along per candidate.
+     * With ten candidates a run that measured 20k input tokens in 2026-08: 92%
+     * of the prompt was this one field, and 58% of that was guides.
+     *
+     * What survives is what answers the only question here — could this book
+     * frame this news: title, author, category, distance, a few chapter titles
+     * as a scope hint, and the guide's opening thesis (the paragraph before the
+     * `📘 深度概覽` marker, which is the one-line pitch the rest elaborates).
+     * The Amazon link answers nothing and is dropped outright.
+     */
+    internal fun trimBooksForSelection(booksJson: String): JsonArray {
+        val books = runCatching { Json.parseToJsonElement(booksJson).jsonArray }.getOrNull()
+            ?: return buildJsonArray {}
+        return buildJsonArray {
+            books.forEach { entry ->
+                val book = entry as? JsonObject ?: return@forEach
+                add(
+                    buildJsonObject {
+                        book["title_zh"]?.let { put("title_zh", it) }
+                        book["author"]?.let { put("author", it) }
+                        book["category"]?.let { put("category", it) }
+                        book["distance"]?.let { put("distance", it) }
+                        book["guide"]?.jsonPrimitive?.contentOrNull?.let { guide ->
+                            put("guide", guide.substringBefore(DEEP_OVERVIEW_MARKER).trim())
+                        }
+                        book["chapter_titles"]?.jsonArray?.let { titles ->
+                            putJsonArray("chapter_titles") { titles.take(SELECT_CHAPTER_TITLES).forEach { add(it) } }
+                        }
+                    },
+                )
+            }
+        }
+    }
+
     private fun buildSelectPrompt(candidates: List<ItemRepository.SelectionCandidate>, maxPicks: Int): String {
         val list = buildJsonArray {
             candidates.forEach { c ->
@@ -152,7 +202,7 @@ class GeminiClient(
                         // Resonance evidence (ADR-010): how much the bookshelf
                         // has to say. Smaller distance = stronger.
                         c.topBookDistance?.let { put("library_distance", it) }
-                        c.booksJson?.let { put("library_books", Json.parseToJsonElement(it)) }
+                        c.booksJson?.let { put("library_books", trimBooksForSelection(it)) }
                     },
                 )
             }
@@ -359,18 +409,12 @@ class GeminiClient(
         val root = Json.parseToJsonElement(body).jsonObject
         val candidate = root["candidates"]?.jsonArray?.firstOrNull()?.jsonObject
         val finishReason = candidate?.get("finishReason")?.jsonPrimitive?.content
-        val text = candidate?.get("content")?.jsonObject
-            ?.get("parts")?.jsonArray?.firstOrNull()?.jsonObject
-            ?.get("text")?.jsonPrimitive?.content
-            ?: run {
-                val block = root["promptFeedback"]?.jsonObject?.get("blockReason")?.jsonPrimitive?.content
-                error("Gemini returned no text${reasonSuffix(finishReason, block)}: ${body.take(300)}")
-            }
-        val obj = try {
-            Json.parseToJsonElement(text.trim()).jsonObject
-        } catch (e: Exception) {
-            error("Gemini output was not valid JSON${reasonSuffix(finishReason, null)}: ${text.trim().take(300)}")
-        }
+
+        // Usage is read BEFORE the response is validated, and both failure exits
+        // below carry it out: Google bills for a generation we could not parse
+        // exactly as it bills for one we could. Throwing it away meant the most
+        // expensive tier could fail all night while the ledger — and therefore
+        // DAILY_LLM_BUDGET_USD — stayed quiet about it.
         val usage = root["usageMetadata"]?.jsonObject
         // thinking tokens 按 output 價計費，卻不算在 candidatesTokenCount 裡。
         // 在 2.5 系列上這一項通常是 0，到了 3.x 它是主要開銷：實測
@@ -379,11 +423,30 @@ class GeminiClient(
         // 正是靠帳本判斷該不該停。ADR-011 的超支就是漏記帳來的。
         val answerTokens = usage?.get("candidatesTokenCount")?.jsonPrimitive?.int ?: 0
         val thoughtTokens = usage?.get("thoughtsTokenCount")?.jsonPrimitive?.int ?: 0
-        return Payload(
-            obj = obj,
-            inputTokens = usage?.get("promptTokenCount")?.jsonPrimitive?.int ?: 0,
-            outputTokens = answerTokens + thoughtTokens,
-        )
+        val inputTokens = usage?.get("promptTokenCount")?.jsonPrimitive?.int ?: 0
+        val outputTokens = answerTokens + thoughtTokens
+
+        val text = candidate?.get("content")?.jsonObject
+            ?.get("parts")?.jsonArray?.firstOrNull()?.jsonObject
+            ?.get("text")?.jsonPrimitive?.content
+            ?: run {
+                val block = root["promptFeedback"]?.jsonObject?.get("blockReason")?.jsonPrimitive?.content
+                throw UnusableResponse(
+                    "Gemini returned no text${reasonSuffix(finishReason, block)}: ${body.take(300)}",
+                    inputTokens,
+                    outputTokens,
+                )
+            }
+        val obj = try {
+            Json.parseToJsonElement(text.trim()).jsonObject
+        } catch (e: Exception) {
+            throw UnusableResponse(
+                "Gemini output was not valid JSON${reasonSuffix(finishReason, null)}: ${text.trim().take(300)}",
+                inputTokens,
+                outputTokens,
+            )
+        }
+        return Payload(obj = obj, inputTokens = inputTokens, outputTokens = outputTokens)
     }
 
     private fun reasonSuffix(finishReason: String?, blockReason: String?): String =
@@ -397,4 +460,118 @@ class GeminiClient(
 
     private fun JsonObject.required(field: String): String =
         this[field]?.jsonPrimitive?.content ?: error("JSON missing $field")
+
+    companion object {
+        /** Where a `guide` stops pitching the book and starts being a 深度概覽. */
+        private const val DEEP_OVERVIEW_MARKER = "📘 深度概覽"
+
+        /** Enough chapter titles to show a book's scope — one full list ran to 889 chars. */
+        private const val SELECT_CHAPTER_TITLES = 8
+
+        /**
+         * A tier's response schema: the wire contract for decoding, not
+         * documentation. The prompts still spell the shape out in words —
+         * the schema fixes the *structure*, the prose is what gets the fields
+         * filled in well — so the two are edited together or the model is told
+         * one thing and graded on another.
+         *
+         * `propertyOrdering` is load-bearing rather than cosmetic: Gemini
+         * generates fields in schema order, so `skip` is declared before the
+         * essay body — the model commits to whether it has something worth
+         * saying before it starts saying it, the order 寧缺勿濫 asks for.
+         *
+         * Deliberately NOT expressible here: "skip=false requires essay_md".
+         * A schema cannot state a conditional requirement, so [parseEssay]
+         * still checks that one itself.
+         */
+        private fun schema(json: String): JsonObject = Json.parseToJsonElement(json).jsonObject
+
+        private val DIGEST_SCHEMA = schema(
+            """
+            {
+              "type": "OBJECT",
+              "properties": {
+                "summary_zh": {"type": "STRING"},
+                "summary_en": {"type": "STRING"},
+                "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "significance_score": {"type": "INTEGER"},
+                "category": {
+                  "type": "STRING",
+                  "enum": ["research", "product", "engineering", "policy", "other"]
+                }
+              },
+              "required": ["summary_zh", "summary_en", "tags", "significance_score", "category"],
+              "propertyOrdering": ["summary_zh", "summary_en", "tags", "significance_score", "category"]
+            }
+            """.trimIndent(),
+        )
+
+        private val SELECT_SCHEMA = schema(
+            """
+            {
+              "type": "OBJECT",
+              "properties": {
+                "picks": {
+                  "type": "ARRAY",
+                  "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                      "id": {"type": "INTEGER"},
+                      "reason": {"type": "STRING"}
+                    },
+                    "required": ["id", "reason"],
+                    "propertyOrdering": ["id", "reason"]
+                  }
+                }
+              },
+              "required": ["picks"],
+              "propertyOrdering": ["picks"]
+            }
+            """.trimIndent(),
+        )
+
+        private val ESSAY_SCHEMA = schema(
+            """
+            {
+              "type": "OBJECT",
+              "properties": {
+                "skip": {"type": "BOOLEAN"},
+                "skip_reason": {"type": "STRING", "nullable": true},
+                "title_zh": {"type": "STRING", "nullable": true},
+                "essay_md": {"type": "STRING", "nullable": true},
+                "books_used": {
+                  "type": "ARRAY",
+                  "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                      "book_id": {"type": "STRING"},
+                      "book_title": {"type": "STRING"},
+                      "chapter_id": {"type": "STRING"},
+                      "chapter_title": {"type": "STRING"}
+                    },
+                    "required": ["book_id", "book_title", "chapter_id", "chapter_title"],
+                    "propertyOrdering": ["book_id", "book_title", "chapter_id", "chapter_title"]
+                  }
+                }
+              },
+              "required": ["skip", "books_used"],
+              "propertyOrdering": ["skip", "skip_reason", "title_zh", "essay_md", "books_used"]
+            }
+            """.trimIndent(),
+        )
+
+        private val JUDGE_SCHEMA = schema(
+            """
+            {
+              "type": "OBJECT",
+              "properties": {
+                "related": {"type": "BOOLEAN"},
+                "reason": {"type": "STRING"}
+              },
+              "required": ["related", "reason"],
+              "propertyOrdering": ["related", "reason"]
+            }
+            """.trimIndent(),
+        )
+    }
 }
