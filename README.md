@@ -90,6 +90,12 @@ docker compose up -d         # rabbitmq + postgres, migrations via flyway
 ./gradlew build              # compile + tests
 ```
 
+To stop it on purpose, set `PIPELINE_PAUSED=true` and `docker compose up -d`:
+every process stays up and scrapeable, only the work stops. Stopping the
+containers instead fires about a dozen alerts, because the monitoring cannot
+tell a deliberate stop from a dead one — [`docs/runbooks/pause.md`](docs/runbooks/pause.md)
+has the whole table.
+
 ## Status
 
 | Milestone | Scope                                                        | State |

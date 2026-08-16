@@ -17,6 +17,11 @@ object Metrics {
 
     fun start(appName: String, defaultPort: Int): MeterRegistry {
         val registry = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+        // Every app's first call, so the pause gauge rides along here rather
+        // than being pasted into five mains. A paused app that stops exporting
+        // this would be indistinguishable from a dead one — which is exactly
+        // the confusion PIPELINE_PAUSED exists to remove.
+        Pause.register(appName, registry)
         val port = Config.int("METRICS_PORT", defaultPort)
         // Bind 127.0.0.1 on the host (zero-inbound, ADR-006); inside a container
         // set METRICS_BIND=0.0.0.0 so Prometheus can scrape over the Docker

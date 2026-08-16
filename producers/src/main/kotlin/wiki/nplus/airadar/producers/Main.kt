@@ -7,6 +7,7 @@ import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import wiki.nplus.airadar.common.Config
 import wiki.nplus.airadar.common.ItemEnvelope
+import wiki.nplus.airadar.common.Pause
 import wiki.nplus.airadar.common.Rabbit
 import wiki.nplus.airadar.common.RabbitTopology
 import java.net.http.HttpClient
@@ -26,6 +27,17 @@ fun main() = wiki.nplus.airadar.common.App.main("producers") {
     val connection = Rabbit.connect("producers")
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)
+
+    // A declared stop (PIPELINE_PAUSED) means no intake at all. Park rather than
+    // return: falling off the end of main exits 0 and `restart: unless-stopped`
+    // would turn the deliberate stop into a restart loop, which is the alert
+    // noise the flag exists to avoid. /metrics stays bound, so the pause gauge
+    // keeps being scraped. See docs/runbooks/pause.md.
+    if (Pause.paused) {
+        log.warn("producers: paused, polling no source")
+        java.util.concurrent.CountDownLatch(1).await()
+    }
+
     val http = HttpClient.newHttpClient()
 
     data class Source(val name: String, val defaultIntervalMinutes: Int, val poll: () -> List<ItemEnvelope>)

@@ -49,6 +49,11 @@ docker compose up -d
 
 Schema changes are applied by the flyway compose service on `up`.
 
+To take the pipeline down for a while, do **not** `docker compose stop` — that
+fires eight `ScrapeTargetDown` plus every textfile-backed staleness rule, on a
+4h repeat. Set `PIPELINE_PAUSED=true` instead: the containers stay up and
+scrapeable and only the work stops. See [`pause.md`](pause.md).
+
 ### news-echo Phase 2 rollout (one-time, ADR-010)
 
 1. `.env` needs `LIBRARY_SECRET` (same value as the bridge's `BRIDGE_SECRET`

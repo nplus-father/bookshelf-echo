@@ -7,6 +7,7 @@ import wiki.nplus.airadar.common.Db
 import wiki.nplus.airadar.common.Freshness
 import wiki.nplus.airadar.common.ItemRepository
 import wiki.nplus.airadar.common.ItemState
+import wiki.nplus.airadar.common.Pause
 import wiki.nplus.airadar.common.Rabbit
 import wiki.nplus.airadar.common.RabbitTopology
 import wiki.nplus.airadar.common.StageMessage
@@ -44,13 +45,21 @@ fun main() = wiki.nplus.airadar.common.App.main("digester") {
         usage,
     )
     val curatorTickMinutes = Config.int("CURATOR_TICK_MINUTES", 5)
-    kotlin.concurrent.thread(isDaemon = true, name = "curator") {
-        while (true) {
-            runCatching { curator.runIfDue(java.time.Instant.now()) }
-                .onFailure { log.warn("selection attempt failed, next tick retries: {}", it.toString()) }
-            runCatching { essayist.runIfDue(java.time.Instant.now()) }
-                .onFailure { log.warn("essay attempt failed, next tick retries: {}", it.toString()) }
-            Thread.sleep(curatorTickMinutes * 60_000L)
+    // These two are where nearly all the money goes (SELECT and ESSAY are the
+    // pro tiers), so they are the first thing a declared stop has to reach —
+    // the per-item consumer below parks its messages, but nothing queues these:
+    // they wake themselves on a clock. The thread is not started at all rather
+    // than checking each tick; the flag cannot change without a restart, so
+    // there is nothing for it to reconsider. Pause.register already logged why.
+    if (!Pause.paused) {
+        kotlin.concurrent.thread(isDaemon = true, name = "curator") {
+            while (true) {
+                runCatching { curator.runIfDue(java.time.Instant.now()) }
+                    .onFailure { log.warn("selection attempt failed, next tick retries: {}", it.toString()) }
+                runCatching { essayist.runIfDue(java.time.Instant.now()) }
+                    .onFailure { log.warn("essay attempt failed, next tick retries: {}", it.toString()) }
+                Thread.sleep(curatorTickMinutes * 60_000L)
+            }
         }
     }
 

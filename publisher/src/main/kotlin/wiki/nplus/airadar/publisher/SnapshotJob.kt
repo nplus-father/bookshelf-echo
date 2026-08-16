@@ -66,6 +66,7 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
             byPurpose = repo.llmTodayByPurpose(),
             shortlistPending = repo.shortlistPending(Config.int("SHORTLIST_TTL_DAYS", 7)).size,
             receivedLast24h = repo.receivedLast24h(),
+            paused = wiki.nplus.airadar.common.Pause.paused,
         )
 
         repo.saveSnapshot(snapshot)
@@ -114,8 +115,17 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
             byPurpose: List<ItemRepository.LlmTodayRow>,
             shortlistPending: Int,
             receivedLast24h: Int,
+            paused: Boolean,
         ): String = buildJsonObject {
             put("capturedAt", now.toString())
+            // A paused pipeline produces exactly the readings a broken one
+            // does: queues flat, no digests, no essay. Everything else in this
+            // repo treats "stale looks like healthy" as the bug to design out,
+            // and a stop nobody declared to the reader is the same bug wearing
+            // the opposite sign — so the snapshot says which it is. Passed in
+            // rather than read from Config here so a test can assert both
+            // states; the enforcement lives in the apps, this is reporting.
+            put("paused", paused)
             // How often this file is supposed to be rewritten. Without it a
             // reader cannot tell a fresh snapshot from a stale one — the
             // publisher went silent for 12 hours on 2026-07-19 and the

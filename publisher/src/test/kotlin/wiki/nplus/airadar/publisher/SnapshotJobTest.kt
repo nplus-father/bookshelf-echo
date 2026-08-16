@@ -29,6 +29,7 @@ class SnapshotJobTest {
             ItemRepository.LlmTodayRow("ESSAY", "gemini-2.5-pro", 0.1832, 48210, 9120, 1),
             ItemRepository.LlmTodayRow("DIGEST", "gemini-2.5-flash", 0.0421, 210400, 18300, 9),
         ),
+        paused: Boolean = false,
     ) = Json.parseToJsonElement(
         SnapshotJob.render(
             now = now,
@@ -38,6 +39,7 @@ class SnapshotJobTest {
             byPurpose = byPurpose,
             shortlistPending = 3,
             receivedLast24h = 4,
+            paused = paused,
         ),
     ).jsonObject
 
@@ -46,13 +48,26 @@ class SnapshotJobTest {
         val snap = render()
         assertEquals(
             setOf(
-                "capturedAt", "snapshotIntervalMinutes", "queues", "items", "llmToday",
+                "capturedAt", "paused", "snapshotIntervalMinutes", "queues", "items", "llmToday",
                 "llmTodayByPurpose", "limits", "shortlist", "receivedLast24h",
             ),
             snap.keys,
         )
         assertEquals("2026-07-21T03:00:00Z", snap["capturedAt"]!!.jsonPrimitive.content)
         assertEquals(4, snap["receivedLast24h"]!!.jsonPrimitive.int())
+    }
+
+    /**
+     * A paused pipeline and a dead one publish identical numbers — flat queues,
+     * no digests, no essay. The dashboard can only tell them apart if the
+     * snapshot says so, and the key has to be present in BOTH states: a field
+     * that appears only while paused is indistinguishable from an old publisher
+     * that never had it, which is how the reader ends up guessing again.
+     */
+    @Test
+    fun `paused is always present and reports the declared stop`() {
+        assertEquals(false, render(paused = false)["paused"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(true, render(paused = true)["paused"]!!.jsonPrimitive.content.toBoolean())
     }
 
     @Test

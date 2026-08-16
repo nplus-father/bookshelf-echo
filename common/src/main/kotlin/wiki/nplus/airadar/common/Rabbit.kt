@@ -113,16 +113,27 @@ object Rabbit {
                     val message = String(body)
                     val start = System.nanoTime()
                     try {
-                        handler(message)
-                        outcome("ok")
+                        // A declared stop (PIPELINE_PAUSED, see Pause) suspends the
+                        // work, not the consumer. Cancelling basicConsume would drop
+                        // the queue to consumers=0, which the snapshot and the public
+                        // dashboard both read as "stalled" — the pause would then look
+                        // exactly like the outage it is not. The message takes the same
+                        // come-back-later path as an exhausted budget instead, so
+                        // nothing is acked away and nothing reaches the DLQ.
+                        if (Pause.paused) {
+                            outcome("paused")
+                            parkForLater(queue, message, props)
+                        } else {
+                            handler(message)
+                            outcome("ok")
+                        }
                     } catch (e: RetryableFailure) {
                         outcome("retry")
                         routeToRetry(queue, message, props, e)
                     } catch (e: BudgetExhausted) {
                         outcome("budget_parked")
                         log.info("budget exhausted, re-parking in longest tier: {}", e.message)
-                        val headers = props.headers.orEmpty().mapValues { it.value as Any }
-                        publish(channel, "", RabbitTopology.retryQueue(queue, RabbitTopology.RETRY_TIERS.size), message, headers)
+                        parkForLater(queue, message, props)
                     } catch (e: Exception) {
                         outcome("dlq")
                         log.error("non-retryable failure, parking in DLQ", e)
@@ -131,6 +142,19 @@ object Rabbit {
                     timer?.record(System.nanoTime() - start, java.util.concurrent.TimeUnit.NANOSECONDS)
                     channel.basicAck(envelope.deliveryTag, false)
                     lastActivity.set(System.currentTimeMillis())
+                }
+
+                /**
+                 * Come back later without burning a retry attempt: straight into
+                 * the longest wait tier (1h), headers preserved, TTL expiry
+                 * dead-letters it home. Shared by the budget breaker and by
+                 * PIPELINE_PAUSED — both are "not now", neither is "failed", and
+                 * neither may consume one of the three attempts that decide
+                 * whether an item ends up in the DLQ.
+                 */
+                private fun parkForLater(origin: String, message: String, props: AMQP.BasicProperties) {
+                    val headers = props.headers.orEmpty().mapValues { it.value as Any }
+                    publish(channel, "", RabbitTopology.retryQueue(origin, RabbitTopology.RETRY_TIERS.size), message, headers)
                 }
 
                 private fun routeToRetry(origin: String, message: String, props: AMQP.BasicProperties, e: RetryableFailure) {
