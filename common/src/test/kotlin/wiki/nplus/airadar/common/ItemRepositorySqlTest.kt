@@ -47,7 +47,7 @@ class ItemRepositorySqlTest {
             ItemEnvelope(
                 source = "news",
                 externalId = "ext-${seq++}",
-                url = "https://example.com/${seq}",
+                url = "https://example.com/$seq",
                 title = title,
                 publishedAt = "2026-07-21T00:00:00Z",
             ),

@@ -30,10 +30,16 @@ jobs:
       # The `jib` task graph is compile → jar → push: it never runs a test. So
       # without this step a red suite deployed to prod unnoticed, and the tests
       # only ever ran on whichever laptop remembered to run them.
+      # spotlessCheck before build so a formatting failure costs seconds rather
+      # than the whole compile+test cycle. It is deliberately narrow — ktlint's
+      # reflow rules are disabled in build.gradle.kts because the long
+      # explanatory comments here are the documentation, not debt — so a failure
+      # means something genuinely mechanical (imports, trailing whitespace) and
+      # `./gradlew spotlessApply` always fixes it.
       - name: Build & test
         run: |
           chmod +x gradlew
-          ./gradlew build
+          ./gradlew spotlessCheck build
 
       # Jib builds one image per app module and pushes:
       #   ghcr.io/nplus-father/bookshelf-echo-{producers,enricher,matcher,digester,publisher}
