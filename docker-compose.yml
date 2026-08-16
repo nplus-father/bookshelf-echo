@@ -152,7 +152,11 @@ services:
     env_file: [.env]
     environment:
       <<: *app-env
-      CONTENT_DIR: /app/content        # host .env points at an absolute host path
+      # Pinned here, not inherited: this is a path inside the container, and the
+      # bind mount below is what decides where it lands on the host. The host
+      # .env used to also set it (to a stale ai-radar path) — dead weight that
+      # this line always overrode, removed from prod 2026-08-16.
+      CONTENT_DIR: /app/content
     volumes:
       - ./out/content:/app/content     # daily/weekly markdown persists on the host
     depends_on:
