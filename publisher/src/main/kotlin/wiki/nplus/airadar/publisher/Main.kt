@@ -12,6 +12,7 @@ import wiki.nplus.airadar.common.ItemState
 import wiki.nplus.airadar.common.LibraryClient
 import wiki.nplus.airadar.common.Rabbit
 import wiki.nplus.airadar.common.RabbitTopology
+import wiki.nplus.airadar.common.Settings
 import wiki.nplus.airadar.common.StageMessage
 import java.nio.file.Files
 import java.nio.file.Path
@@ -40,7 +41,7 @@ fun main() = wiki.nplus.airadar.common.App.main("publisher") {
     // 引用的那幾章全文，比對每一段 blockquote 屬於哪一本。取不到就不標，發佈
     // 本身不受影響 —— 出處是加分，不是這條路的必要條件。
     val library = LibraryClient.fromEnv(http)
-    val chapterChars = Config.int("ESSAY_CHAPTER_CHARS", 8000)
+    val chapterChars = Settings.essayChapterChars
 
     /**
      * essayist 當初引用的章節全文。失敗一律回空清單：library-bridge 掛掉時
@@ -140,7 +141,7 @@ fun main() = wiki.nplus.airadar.common.App.main("publisher") {
     // the public dashboard for an hour after every deploy. The settle delay covers
     // the sibling apps, which compose restarts alongside us.
     val snapshotJob = SnapshotJob(repo, contentDir, java.net.http.HttpClient.newHttpClient())
-    val snapshotMinutes = Config.int("SNAPSHOT_INTERVAL_MINUTES", 60)
+    val snapshotMinutes = Settings.snapshotIntervalMinutes
     val settleSeconds = Config.int("SNAPSHOT_SETTLE_SECONDS", 45)
 
     // When the snapshot loop stops producing, nothing says so: the dashboard

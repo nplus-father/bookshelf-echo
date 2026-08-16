@@ -14,6 +14,7 @@ import wiki.nplus.airadar.common.QuoteVerifier
 import wiki.nplus.airadar.common.Rabbit
 import wiki.nplus.airadar.common.RabbitTopology
 import wiki.nplus.airadar.common.RetryableFailure
+import wiki.nplus.airadar.common.Settings
 import wiki.nplus.airadar.common.StageMessage
 import java.time.Instant
 import java.time.LocalDate
@@ -46,18 +47,19 @@ class EssayistJob(
 ) {
     private val log = LoggerFactory.getLogger(EssayistJob::class.java)
     private val essayHourUtc = Config.int("ESSAY_HOUR_UTC", 22)
-    private val ttlDays = Config.int("SHORTLIST_TTL_DAYS", 7)
-    // 2 章、每章 6000 字是為 2.5-pro 的 context 訂的。essay 層現在跑 3.x（大得
-    // 多的 context，而且一天只呼叫一次），書證量對深度的影響比換模型本身更大。
-    // ESSAY_CHAPTER_CHARS 同時被 prompt 與 publisher 的引文標記讀取，三邊必須是
-    // 同一個數字。
+    private val ttlDays = Settings.shortlistTtlDays
+
+    // 幾章:這個數字只有這裡讀，所以留在這裡。每章幾字:三個地方讀，
+    // 定義在 Settings.essayChapterChars（曾經三邊不一致，引文因此掉出處）。
     private val maxChapters = Config.int("ESSAY_MAX_CHAPTERS", 3)
-    private val chapterChars = Config.int("ESSAY_CHAPTER_CHARS", 12000)
+    private val chapterChars = Settings.essayChapterChars
+
     /** 引文對不上時，允許帶著「哪幾句對不上」重寫一次（ADR-012）。 */
     private val reviseOnUnverifiedQuotes = Config.bool("ESSAY_REVISE_ON_BAD_QUOTES", true)
     private val maxJudged = Config.int("ESSAY_JUDGE_MAX_CANDIDATES", 3)
-    private val dailyBudgetUsd = Config.double("DAILY_LLM_BUDGET_USD", 0.50)
-    private val attempts = DailyAttemptGuard(Config.int("DAILY_JOB_MAX_ATTEMPTS", 3))
+    private val dailyBudgetUsd = Settings.dailyBudgetUsd
+    private val attempts = DailyAttemptGuard(Settings.dailyJobMaxAttempts)
+
     /**
      * 逾時退還嘗試（2026-08-03），但退還本身也要記帳：一次逾時代表模型很可能
      * 已經生成完畢、只是我們沒等到，錢照付而帳本記不到（沒有回應就沒有
@@ -65,6 +67,7 @@ class EssayistJob(
      * 最壞情況是 3 次嘗試 + 2 次退還 = 5 次呼叫，DAILY_LLM_BUDGET_USD 仍是硬底線。
      */
     private val timeoutRefunds = DailyAttemptGuard(Config.int("DAILY_JOB_MAX_TIMEOUT_REFUNDS", 2))
+
     /** 已經為哪一天喊過 stand-down —— 每個 tick 重喊會讓一次失敗被計成十幾次。 */
     private var standDownDay: LocalDate? = null
     private fun outcome(name: String) = registry.counter("airadar_essay_runs_total", "outcome", name)

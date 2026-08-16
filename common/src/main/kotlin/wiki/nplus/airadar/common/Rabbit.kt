@@ -38,10 +38,10 @@ object Rabbit {
     private val log = LoggerFactory.getLogger(Rabbit::class.java)
 
     fun connect(appName: String): Connection = ConnectionFactory().apply {
-        host = Config.str("RABBITMQ_HOST", "127.0.0.1")
+        host = Settings.rabbitmqHost
         port = Config.int("RABBITMQ_PORT", 5672)
-        username = Config.str("RABBITMQ_USER", "airadar")
-        password = Config.str("RABBITMQ_PASSWORD")
+        username = Settings.rabbitmqUser
+        password = Settings.rabbitmqPassword
     }.newConnection("bookshelf-echo-$appName")
 
     fun declareTopology(channel: Channel) {

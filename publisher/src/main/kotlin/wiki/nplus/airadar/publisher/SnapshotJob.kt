@@ -11,6 +11,7 @@ import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
 import wiki.nplus.airadar.common.Config
 import wiki.nplus.airadar.common.ItemRepository
+import wiki.nplus.airadar.common.Settings
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -28,9 +29,10 @@ import java.util.Base64
  */
 class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path, private val http: HttpClient) {
     private val log = LoggerFactory.getLogger(SnapshotJob::class.java)
+
     // Same host/port pair the AMQP connection uses: in a container these point
     // at the `rabbitmq` service, not at this process's own loopback.
-    private val mgmtHost = Config.str("RABBITMQ_HOST", "127.0.0.1")
+    private val mgmtHost = Settings.rabbitmqHost
     private val mgmtPort = Config.int("RABBITMQ_MGMT_PORT", 15672)
 
     /**
@@ -54,7 +56,7 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
     private val mgmtPrefix = Config.str("RABBITMQ_MGMT_PATH_PREFIX", "").trimEnd('/')
 
     private val auth = Base64.getEncoder().encodeToString(
-        "${Config.str("RABBITMQ_USER", "airadar")}:${Config.str("RABBITMQ_PASSWORD")}".toByteArray(),
+        "${Settings.rabbitmqUser}:${Settings.rabbitmqPassword}".toByteArray(),
     )
 
     fun capture(now: Instant): String {
@@ -64,7 +66,7 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
             items = repo.stateCounts(),
             llm = repo.llmToday(),
             byPurpose = repo.llmTodayByPurpose(),
-            shortlistPending = repo.shortlistPending(Config.int("SHORTLIST_TTL_DAYS", 7)).size,
+            shortlistPending = repo.shortlistPending(Settings.shortlistTtlDays).size,
             receivedLast24h = repo.receivedLast24h(),
             paused = wiki.nplus.airadar.common.Pause.paused,
         )
@@ -132,7 +134,7 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
             // dashboard looked exactly as healthy as ever. The cadence is the
             // publisher's own, so it publishes it rather than making the site
             // hardcode a guess.
-            put("snapshotIntervalMinutes", Config.int("SNAPSHOT_INTERVAL_MINUTES", 60))
+            put("snapshotIntervalMinutes", Settings.snapshotIntervalMinutes)
             putJsonArray("queues") {
                 queues.forEach { add(it) }
             }
@@ -164,13 +166,16 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
             // The digester's gates, echoed so a reader of the snapshot can tell
             // "spent $0.12" from "spent $0.12 of $0.50" — a spend figure without
             // its limit says nothing about whether the breaker is close to
-            // tripping. Same env vars the digester reads (compose gives every
-            // app the same .env); reporting only, never enforcement.
+            // tripping. Reporting only, never enforcement — which is exactly
+            // why these must come from Settings and not from a second copy of
+            // each default: shortlistMaxPerDay was published as 3 while the
+            // curator used 2, and a dashboard that misreports the limit is
+            // worse than one that omits it.
             putJsonObject("limits") {
-                put("dailyBudgetUsd", Config.double("DAILY_LLM_BUDGET_USD", 0.50))
-                put("dailyDigestLimit", Config.int("DAILY_DIGEST_LIMIT", 10))
-                put("shortlistMaxPerDay", Config.int("SHORTLIST_MAX_PER_DAY", 3))
-                put("matchNoResonanceDistance", Config.double("MATCH_NO_RESONANCE_DISTANCE", 1.10))
+                put("dailyBudgetUsd", Settings.dailyBudgetUsd)
+                put("dailyDigestLimit", Settings.dailyDigestLimit)
+                put("shortlistMaxPerDay", Settings.shortlistMaxPerDay)
+                put("matchNoResonanceDistance", Settings.matchNoResonanceDistance)
             }
             // The selection funnel's live pool (ADR-009): picks awaiting a
             // composition, within TTL.

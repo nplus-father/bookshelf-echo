@@ -10,6 +10,7 @@ import wiki.nplus.airadar.common.ItemState
 import wiki.nplus.airadar.common.Pause
 import wiki.nplus.airadar.common.Rabbit
 import wiki.nplus.airadar.common.RabbitTopology
+import wiki.nplus.airadar.common.Settings
 import wiki.nplus.airadar.common.StageMessage
 import java.net.http.HttpClient
 
@@ -20,9 +21,9 @@ fun main() = wiki.nplus.airadar.common.App.main("digester") {
     val repo = ItemRepository(Db.dataSource("digester"))
     val http = HttpClient.newHttpClient()
     val llm = LlmClient.digesterFromEnv(http)
-    val dailyBudgetUsd = Config.double("DAILY_LLM_BUDGET_USD", 0.50)
-    val dailyDigestLimit = Config.int("DAILY_DIGEST_LIMIT", 10) // high-value items to digest per UTC day; 0 = unlimited
-    val maxAgeDays = Config.long("MATCH_MAX_AGE_DAYS", 3) // news older than this is dropped STALE before spend; 0 = off
+    val dailyBudgetUsd = Settings.dailyBudgetUsd
+    val dailyDigestLimit = Settings.dailyDigestLimit
+    val maxAgeDays = Settings.matchMaxAgeDays
     val connection = Rabbit.connect("digester")
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)

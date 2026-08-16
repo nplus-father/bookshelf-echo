@@ -9,6 +9,7 @@ import wiki.nplus.airadar.common.ItemState
 import wiki.nplus.airadar.common.LibraryClient
 import wiki.nplus.airadar.common.Rabbit
 import wiki.nplus.airadar.common.RabbitTopology
+import wiki.nplus.airadar.common.Settings
 import wiki.nplus.airadar.common.StageMessage
 import java.net.http.HttpClient
 import java.time.Instant
@@ -37,9 +38,9 @@ fun main() = wiki.nplus.airadar.common.App.main("matcher") {
     val registry = wiki.nplus.airadar.common.Metrics.start("matcher", 9105)
     val repo = ItemRepository(Db.dataSource("matcher"))
     val library = LibraryClient.fromEnv(HttpClient.newHttpClient())
-    val noResonanceDistance = Config.double("MATCH_NO_RESONANCE_DISTANCE", 1.10)
+    val noResonanceDistance = Settings.matchNoResonanceDistance
     val queryChars = Config.int("MATCH_QUERY_CHARS", 1500)
-    val maxAgeDays = Config.long("MATCH_MAX_AGE_DAYS", 3) // shared with the digester; 0 = off
+    val maxAgeDays = Settings.matchMaxAgeDays
     val connection = Rabbit.connect("matcher")
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)

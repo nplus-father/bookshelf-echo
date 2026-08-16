@@ -21,6 +21,7 @@ import wiki.nplus.airadar.common.ItemRepository
 import wiki.nplus.airadar.common.JudgeResult
 import wiki.nplus.airadar.common.RetryableFailure
 import wiki.nplus.airadar.common.SelectResult
+import wiki.nplus.airadar.common.Settings
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -55,6 +56,7 @@ class GeminiClient(
      */
     private val temperature: Double =
         Config.double("LLM_TEMPERATURE", if (model.startsWith("gemini-3")) 1.0 else 0.2)
+
     // Lazy so that construction (and pure parse tests) never require the key.
     private val apiKey by lazy { Config.str("GEMINI_API_KEY") }
 
@@ -245,7 +247,7 @@ class GeminiClient(
         // 章節在 prompt 裡再截一次的長度。取回來多少（ESSAY_CHAPTER_CHARS）與塞
         // 進 prompt 多少必須是同一個數字，否則 essayist 會引用到它看得見、但
         // 驗證端（拿的是取回的全文）也拿得到、而 publisher 標記時卻切掉的段落。
-        val chapterChars = Config.int("ESSAY_CHAPTER_CHARS", 12000)
+        val chapterChars = Settings.essayChapterChars
         val chapterBlocks = chapters.joinToString("\n\n") { ch ->
             "### 《${ch.bookTitle}》｜${ch.chapterTitle}（chapter_id: ${ch.chapterId}）\n${ch.content.take(chapterChars)}"
         }

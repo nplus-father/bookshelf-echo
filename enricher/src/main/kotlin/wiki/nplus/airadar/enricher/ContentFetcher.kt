@@ -3,11 +3,12 @@ package wiki.nplus.airadar.enricher
 import org.jsoup.Jsoup
 import org.slf4j.LoggerFactory
 import wiki.nplus.airadar.common.Config
+import wiki.nplus.airadar.common.Settings
 
 class ContentFetcher {
     private val log = LoggerFactory.getLogger(ContentFetcher::class.java)
     private val timeoutMillis = Config.int("FETCH_TIMEOUT_SECONDS", 10) * 1000
-    private val maxChars = Config.int("FETCH_MAX_CHARS", 20_000)
+    private val maxChars = Settings.fetchMaxChars
 
     data class Fetched(val level: String, val text: String?)
 
