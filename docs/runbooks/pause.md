@@ -22,6 +22,7 @@ can flip mid-flight is a flag a half-processed item can straddle.
 | `curator` / `essayist` (the pro-tier spend) | thread never starts |
 | publisher's hourly snapshot | **keeps running** |
 | `site-publisher` sidecar | **keeps running** (a round with nothing to push is a healthy round) |
+| nplus-backend's 08:00 LINE push | **goes quiet on its own** — see below |
 | LLM spend | zero |
 
 Consumers stay registered on purpose. Cancelling them drops the queue to
@@ -32,6 +33,30 @@ Messages take the same come-back-later path as an exhausted budget: into
 is acked away, nothing reaches the DLQ, and no retry attempt is burned. Expect
 `airadar_messages_total{outcome="paused"}` to tick up once an hour per parked
 message; that is the loop working, not a fault.
+
+## The reader downstream: the 08:00 LINE push
+
+nplus-backend reads `essay.json` / `daily.json` every morning and pushes the
+newest to Andrew. Those endpoints always serve *the latest item on the site* and
+have no idea what the reader has already seen, so until 2026-08-17 a pause meant
+the same essay went out again the next morning — and the morning after — until
+it aged out of a two-day freshness window. Recorded: paused 08-16, the 08-15
+essay pushed on both 08-16 and 08-17.
+
+That was never really a pause bug. 寧缺勿濫 is a legal output, so **any** blank
+day already re-sent the previous day's essay once; the pause only made it
+consecutive enough to notice. The backend now keeps a watermark
+(`linebot.push_watermarks`) and sends only what is strictly newer, which
+collapses a pause, a blank day and a dead pipeline into one correct behaviour:
+nothing new, nothing sent.
+
+It deliberately does **not** read `paused`, even though the snapshot publishes
+it. Telling a declared stop from a fault is the alerts' job — `BookshelfEchoPaused`
+and `BookshelfEchoEssayStale`, both on the ENJIA_OPS channel. The LINE content
+channel carries content only. What the backend does report is its own half:
+`ai_radar_push_total{result}`, where `already_pushed` is the healthy silence a
+pause produces (do not alert on it) and `AiRadarPushBroken` covers the three
+results that mean the backend could not deliver something that existed.
 
 ## What the monitoring does
 

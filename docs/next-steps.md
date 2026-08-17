@@ -160,13 +160,27 @@ migration, done manually** (not a plain `git merge`). Full runbook:
       by-purpose panel shows SELECT and ESSAY series.
 - [x] nplus-backend LINE job: env set 2026-07-18 in `nplus-infra/backend.env`
       (host-only, gitignored), `docker compose up -d backend` → healthy,
-      `ai_radar_daily_push [enabled]` 08:00 schedule loaded. NOTE: backend reads
-      only `AI_RADAR_DAILY_URL` (`Env.aiRadarDailyUrl`, `Env.kt:89`);
-      `AI_RADAR_ESSAY_URL` is a phantom — code never reads it, do NOT set it.
-      Real failure mode was worse than first reported: a 404 on `daily.json`
-      makes `AiRadarDigestFetcher.fetch()` fail so the WHOLE card fails to send
-      (not "broken on click"); the footer link is `daily.pageUrl` from the
-      payload (site-publisher writes it), not a backend env var.
+      `ai_radar_daily_push [enabled]` 08:00 schedule loaded. The footer link is
+      `daily.pageUrl` from the payload (site-publisher writes it), not a backend
+      env var.
+
+      ⚠️ **Corrected 2026-08-17.** A note here used to say `AI_RADAR_ESSAY_URL`
+      was a phantom the code never read, and that a 404 on `daily.json` killed
+      the whole push. Both were true when written and neither is now: the essay
+      path shipped afterwards, `Env.aiRadarEssayUrl` is read on every run, and
+      `essay.json` is the *primary* source with `daily.json` as fallback — so a
+      dead `daily.json` costs only the fallback. Verified on the k3s deployment:
+      **neither var is set** (they never made it from the docker-era
+      `backend.env` into the `backend-env` secret), and it works only because
+      both defaults in `Env.kt` already point at
+      `nplus.wiki/bookshelf-echo-site/`. Setting them is optional, not
+      forbidden — but if you ever rename the site again, defaults are the only
+      thing holding this together.
+
+      Since 2026-08-17 the backend also de-duplicates: it pushes only content
+      newer than what it last sent (`linebot.push_watermarks`), so a paused
+      pipeline or a 寧缺勿濫 blank day no longer re-sends yesterday's essay.
+      Each outcome is counted in `ai_radar_push_total{result}`.
 - [ ] Optional later: rebrand the LINE card "📡 AI Radar" heading once that
       repo's WIP settles. Old `nplus.wiki/ai-radar-site/...` links will 404.
 - [ ] Cleanup (after a few days' confidence): delete old `ai-radar_{pg,rabbitmq}
