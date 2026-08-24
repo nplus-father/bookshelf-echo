@@ -29,6 +29,7 @@ services:
       - "127.0.0.1:${RABBITMQ_MGMT_PORT:-15672}:15672"
       - "172.30.0.1:15672:15672"   # k8s ingress-nginx → 管理 UI（同下 ADR-006 例外）
       - "172.30.0.1:15692:15692"   # kps scrape（見檔頭 ADR-006 例外）
+      - "172.30.0.1:5672:5672"     # nplus-backend (k3s) voice producer AMQP（同上 ADR-006 例外）
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-airadar}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set in .env}
