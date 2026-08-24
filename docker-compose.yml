@@ -24,6 +24,10 @@ services:
     image: rabbitmq:4-management
     logging: *default-logging
     container_name: bookshelf-echo-rabbitmq
+    # RabbitMQ's data dir is keyed on rabbit@<hostname>; without a fixed
+    # hostname every `compose up` recreate starts a blank broker (mnesia/
+    # holds one orphan dir per past recreate). Pin it so vhosts/users survive.
+    hostname: bookshelf-echo-rabbitmq
     ports:
       - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
       - "127.0.0.1:${RABBITMQ_MGMT_PORT:-15672}:15672"
