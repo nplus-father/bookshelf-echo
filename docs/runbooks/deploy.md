@@ -77,14 +77,15 @@ docker compose up -d
 ```bash
 docker compose ps
 docker logs -f bookshelf-echo-digester
-docker exec bookshelf-echo-rabbitmq rabbitmqctl list_queues name messages consumers
+docker exec rabbitmq rabbitmqctl list_queues name messages consumers   # broker lives in the nplus-infra stack since 2026-08-25
 docker compose exec postgres psql -U airadar -d airadar -c "SELECT state, count(*) FROM items GROUP BY state"
 ```
 
-Monitoring: Prometheus scrapes `bookshelf-echo-{producers,enricher,matcher,digester,publisher}:910x`
-and `bookshelf-echo-rabbitmq:15692` over `infra-shared-network`; the **Bookshelf Echo
-Pipeline** Grafana dashboard shows queue depth, digest rate, LLM cost and DLQ.
-All containers are visible in Portainer.
+Monitoring: kps Prometheus scrapes the apps' metrics ports and the broker's
+`:15692`, all published on `172.30.0.1` (the k8s bridge gateway); the **Bookshelf
+Echo Pipeline** Grafana dashboard shows queue depth, digest rate, LLM cost and
+DLQ. The broker itself belongs to the nplus-infra compose since 2026-08-25
+(container `rabbitmq`, reached over `infra-shared-network`).
 
 Logging is configured in `common/src/main/resources/logback.xml` (shared by all
 five apps — logback takes the first config on the classpath). Root is INFO with
