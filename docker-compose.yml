@@ -20,41 +20,14 @@ x-logging: &default-logging
     max-file: "5"
 
 services:
-  rabbitmq:
-    image: rabbitmq:4-management
-    logging: *default-logging
-    container_name: bookshelf-echo-rabbitmq
-    # RabbitMQ's data dir is keyed on rabbit@<hostname>; without a fixed
-    # hostname every `compose up` recreate starts a blank broker (mnesia/
-    # holds one orphan dir per past recreate). Pin it so vhosts/users survive.
-    hostname: bookshelf-echo-rabbitmq
-    ports:
-      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
-      - "127.0.0.1:${RABBITMQ_MGMT_PORT:-15672}:15672"
-      - "172.30.0.1:15672:15672"   # k8s ingress-nginx → 管理 UI（同下 ADR-006 例外）
-      - "172.30.0.1:15692:15692"   # kps scrape（見檔頭 ADR-006 例外）
-      - "172.30.0.1:5672:5672"     # nplus-backend (k3s) voice producer AMQP（同上 ADR-006 例外）
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-airadar}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set in .env}
-    volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
-      - ./config/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
-      - ./config/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
-    # Docker's 1024 default makes RabbitMQ log "Available file handles: 1024.
-    # Please consider increasing system limits" on every boot; 65536 is the
-    # documented production floor.
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-    networks: [default, infra-shared]   # infra-shared so Prometheus can scrape :15692
+  # rabbitmq 服務已於 2026-08-25 搬進 nplus-infra 的 compose（擁有權歸位）：
+  # broker 是全站共用基礎設施（vhost `/` 給這裡、vhost `voice` 給 nplus-backend
+  # ＋voice-worker），不該由其中一個消費者的 repo 定義——voice 上線時得來這裡
+  # 加 5672 綁定（f350ac9）就是症狀。資料原封不動：volume
+  # `bookshelf-echo_rabbitmq-data` 與 hostname `bookshelf-echo-rabbitmq`
+  # （data dir 綁 hostname，355d99f）都由 infra 那邊沿用。
+  # 本 repo 的五個 app 改經 infra-shared-network 連同名 `rabbitmq`；
+  # 帳密仍在這裡的 .env（client 端），broker 種子帳號歸 nplus-infra/.env。
 
   # postgres 服務已退役（2026-07-26）：資料庫 2026-07-20 真遷移進 CNPG
   # （10.43.77.92，見 nplus-infra docs/k3s-migration.md Phase 3），舊容器
@@ -74,9 +47,10 @@ services:
       - ./db/migrations:/flyway/sql:ro
 
   # ---- pipeline apps (JVM, Jib images) ---------------------------------------
-  # Each joins the bookshelf-echo default net (to reach rabbitmq by name) and
-  # the external infra-shared-network (so infra-prometheus can scrape its
-  # 127.0.0.1-free metrics port). Config comes from .env; the vars below override
+  # Each joins the bookshelf-echo default net (talking among themselves) and
+  # the external infra-shared-network — since 2026-08-25 that is also where
+  # `rabbitmq` resolves (the broker moved to the nplus-infra stack), on top of
+  # the original reason (Prometheus scraping the 127.0.0.1-free metrics port). Config comes from .env; the vars below override
   # it for in-container networking. Postgres lives in CNPG (POSTGRES_HOST in
   # .env points at its ClusterIP). Metrics ports are published to 172.30.0.1
   # only (kps scrape — ADR-006 exception in the header), never to a public
@@ -99,7 +73,6 @@ services:
       RABBITMQ_MGMT_PORT: "15672"
       METRICS_BIND: 0.0.0.0
     depends_on:
-      rabbitmq: { condition: service_healthy }
       flyway: { condition: service_completed_successfully }
     restart: unless-stopped
     networks: [default, infra-shared]
@@ -113,7 +86,6 @@ services:
     env_file: [.env]
     environment: *app-env
     depends_on:
-      rabbitmq: { condition: service_healthy }
       flyway: { condition: service_completed_successfully }
     restart: unless-stopped
     networks: [default, infra-shared]
@@ -129,7 +101,6 @@ services:
     env_file: [.env]
     environment: *app-env
     depends_on:
-      rabbitmq: { condition: service_healthy }
       flyway: { condition: service_completed_successfully }
     restart: unless-stopped
     networks: [default, infra-shared]
@@ -143,7 +114,6 @@ services:
     env_file: [.env]
     environment: *app-env
     depends_on:
-      rabbitmq: { condition: service_healthy }
       flyway: { condition: service_completed_successfully }
     restart: unless-stopped
     networks: [default, infra-shared]
@@ -165,7 +135,6 @@ services:
     volumes:
       - ./out/content:/app/content     # daily/weekly markdown persists on the host
     depends_on:
-      rabbitmq: { condition: service_healthy }
       flyway: { condition: service_completed_successfully }
     restart: unless-stopped
     networks: [default, infra-shared]
@@ -229,9 +198,6 @@ services:
     networks:
       - default
       - infra-shared
-
-volumes:
-  rabbitmq-data:
 
 networks:
   # bookshelf-echo's own bridge (auto-created as bookshelf-echo_default) is referenced as
