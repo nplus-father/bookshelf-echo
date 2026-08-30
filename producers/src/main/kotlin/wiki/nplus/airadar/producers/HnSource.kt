@@ -14,10 +14,6 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 
-/**
- * Hacker News via the Algolia search API (no key required).
- * Query and score threshold are tunable without redeploying the code.
- */
 class HnSource(private val http: HttpClient) {
     private val query = Config.str("HN_QUERY", "LLM")
     private val minPoints = Config.int("HN_MIN_POINTS", 30)
@@ -39,7 +35,6 @@ class HnSource(private val http: HttpClient) {
             val story = hit.jsonObject
             val objectId = story["objectID"]?.jsonPrimitive?.content ?: return@mapNotNull null
             val title = story["title"]?.jsonPrimitive?.content ?: return@mapNotNull null
-            // Ask/Show HN stories have no external URL; the discussion is the content.
             val url = story["url"]?.jsonPrimitive?.content
                 ?: "https://news.ycombinator.com/item?id=$objectId"
             ItemEnvelope(

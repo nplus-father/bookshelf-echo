@@ -4,11 +4,6 @@ import org.w3c.dom.Element
 import java.io.ByteArrayInputStream
 import javax.xml.parsers.DocumentBuilderFactory
 
-/**
- * Minimal RSS 2.0 / Atom parser on the JDK's DOM — enough for well-formed
- * blog and arXiv feeds, no extra dependency. Malformed feeds throw; the
- * producer's poll-cycle-is-the-retry rule handles it.
- */
 object FeedParser {
     data class FeedItem(val id: String, val title: String, val link: String, val published: String)
 

@@ -12,8 +12,6 @@ import kotlin.test.assertNull
 
 class GeminiClientTest {
 
-    // parseResponse/cost are pure; the API key is resolved lazily and never
-    // touched by these tests.
     private fun client(): GeminiClient = GeminiClient(HttpClient.newHttpClient())
 
     private val sampleResponse = """
@@ -39,8 +37,6 @@ class GeminiClientTest {
 
     @Test
     fun `thinking tokens count as output — they are billed as output`() {
-        // 3.x 系列的主要開銷在 thoughtsTokenCount，而它不在 candidatesTokenCount
-        // 裡。少加這一項，帳本會低估到讓每日預算的斷路器形同虛設。
         val body = sampleResponse.replace(
             """"candidatesTokenCount": 150""",
             """"candidatesTokenCount": 150, "thoughtsTokenCount": 900""",
@@ -75,7 +71,6 @@ class GeminiClientTest {
 
     @Test
     fun `a truncated response names MAX_TOKENS instead of an opaque parser error`() {
-        // finishReason=MAX_TOKENS with the inner JSON cut off mid-object.
         val body = """
             {
               "candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": "{\"summary_zh\": \"半句就被截"}]}}],
@@ -88,10 +83,6 @@ class GeminiClientTest {
 
     @Test
     fun `an unusable answer still reports the tokens it burned`() {
-        // 2026-08-08: two pro-tier essay attempts died here and the ledger
-        // booked nothing for either, so DAILY_LLM_BUDGET_USD saw a third of
-        // what the night actually cost. Google billed the generation whether
-        // or not we could parse it — the usage has to come out with the throw.
         val truncated = """{"skip": false, "title_zh": "標題", "essay_md": "開頭就斷"""
         val body = essayResponse(truncated).replace(
             """"candidatesTokenCount": 1200""",
@@ -104,7 +95,6 @@ class GeminiClientTest {
 
     @Test
     fun `a response with no text at all still reports its input cost`() {
-        // A SAFETY block bills the prompt even though no answer comes back.
         val body = """
             {
               "candidates": [{"finishReason": "SAFETY", "content": {"parts": []}}],
@@ -171,8 +161,6 @@ class GeminiClientTest {
 
     @Test
     fun `selection evidence keeps the pitch and drops the deep overview`() {
-        // 92% of the SELECT prompt was this field and 58% of that was guides —
-        // the tail after the marker elaborates a thesis the first line states.
         val book = client().trimBooksForSelection(sampleBooks)[0].jsonObject
         assertEquals(
             "哈拉瑞以資訊網路為主軸，論證資訊量爆炸不會自動帶來智慧。",
@@ -184,8 +172,6 @@ class GeminiClientTest {
 
     @Test
     fun `selection evidence drops the purchase link entirely`() {
-        // Nothing about "could this book frame this news" is answered by an
-        // Amazon URL, and it was 10.7% of the field.
         assertNull(client().trimBooksForSelection(sampleBooks)[0].jsonObject["purchase_url"])
     }
 
@@ -198,8 +184,6 @@ class GeminiClientTest {
 
     @Test
     fun `unreadable evidence costs the run nothing rather than failing it`() {
-        // The curator ranks on title/score too; a malformed books blob should
-        // not take down the day's only selection call.
         assertEquals(0, client().trimBooksForSelection("{not json").size)
     }
 

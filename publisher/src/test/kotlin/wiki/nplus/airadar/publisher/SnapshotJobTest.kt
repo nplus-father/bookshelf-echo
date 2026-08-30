@@ -10,16 +10,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-/**
- * The snapshot is a cross-repo contract: this publisher writes it, the site's
- * dashboard reads it, and the site degrades silently on an unrecognised field
- * (every read is `snap?.x ?? default`). A rename on this side would therefore
- * ship green on both sides and appear only as a panel missing from the page.
- *
- * These assertions are about key names and nesting, not about values — they
- * exist so that renaming a key breaks a test rather than a dashboard. The
- * matching read side is `bookshelf-echo-site/src/lib/snapshot.ts`.
- */
 class SnapshotJobTest {
 
     private val now = Instant.parse("2026-07-21T03:00:00Z")
@@ -57,13 +47,6 @@ class SnapshotJobTest {
         assertEquals(4, snap["receivedLast24h"]!!.jsonPrimitive.int())
     }
 
-    /**
-     * A paused pipeline and a dead one publish identical numbers — flat queues,
-     * no digests, no essay. The dashboard can only tell them apart if the
-     * snapshot says so, and the key has to be present in BOTH states: a field
-     * that appears only while paused is indistinguishable from an old publisher
-     * that never had it, which is how the reader ends up guessing again.
-     */
     @Test
     fun `paused is always present and reports the declared stop`() {
         assertEquals(false, render(paused = false)["paused"]!!.jsonPrimitive.content.toBoolean())
@@ -80,8 +63,6 @@ class SnapshotJobTest {
 
         val rows = snap["llmTodayByPurpose"]!!.jsonArray
         assertEquals(2, rows.size)
-        // Every row names both what the money bought and which model spent it —
-        // the whole point of the breakdown.
         rows.forEach { row ->
             assertEquals(
                 setOf("purpose", "model", "costUsd", "inputTokens", "outputTokens", "calls"),
@@ -103,22 +84,11 @@ class SnapshotJobTest {
 
     @Test
     fun `a day with no LLM calls still emits the breakdown key`() {
-        // The site renders the breakdown section only when the array is
-        // non-empty; the key must exist regardless, or "no spend yet" becomes
-        // indistinguishable from "old publisher version".
         val snap = render(byPurpose = emptyList())
         assertTrue(snap.containsKey("llmTodayByPurpose"))
         assertEquals(0, snap["llmTodayByPurpose"]!!.jsonArray.size)
     }
 
-    /**
-     * config/rabbitmq/rabbitmq.conf sets `management.path_prefix = /rabbitmq`
-     * so nplus-infra's nginx can mount the UI under /rabbitmq/. That moves the
-     * HTTP API too. This client asked for the un-prefixed path and got 404 on
-     * every interval — swallowed into a WARN, the snapshot still written, the
-     * queue panels silently empty. The prefix belongs in the URL, and the only
-     * thing that can notice it going missing again is a test.
-     */
     @Test
     fun `queue stats url carries the management path prefix`() {
         assertEquals(
@@ -137,8 +107,6 @@ class SnapshotJobTest {
 
     @Test
     fun `an empty prefix still yields the plain api path`() {
-        // A broker without path_prefix is a valid deployment; only the default
-        // has to stay in sync with rabbitmq.conf.
         assertEquals("/api/queues", SnapshotJob.queuesUri("rabbitmq", 15672, "").path)
     }
 

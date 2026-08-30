@@ -13,25 +13,12 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import kotlin.system.exitProcess
 
-/**
- * A failure worth retrying via the ladder: network timeouts, 5xx, 429.
- *
- * [timedOut] marks the subset where the call never reached a verdict — we did
- * not wait long enough, as opposed to the provider answering with a fault. The
- * retry ladder treats both the same; the daily jobs do not (a timeout must not
- * spend one of the day's attempts — see `EssayistJob`).
- */
 class RetryableFailure(
     message: String,
     cause: Throwable? = null,
     val timedOut: Boolean = false,
 ) : Exception(message, cause)
 
-/**
- * The daily LLM budget is spent (design doc §3.4). Not a fault: the message
- * re-parks in the longest retry tier WITHOUT consuming a retry attempt, so the
- * backlog simply waits for the next budget window.
- */
 class BudgetExhausted(message: String) : Exception(message)
 
 object Rabbit {
@@ -52,8 +39,6 @@ object Rabbit {
         }
         channel.queueBind(RabbitTopology.INGEST_QUEUE, RabbitTopology.INGEST_EXCHANGE, "item.*")
         channel.queueDeclare(RabbitTopology.DLQ, true, false, false, quorum)
-        // Consumer-less wait queues: TTL expiry dead-letters straight back to
-        // the origin queue through the default exchange.
         RabbitTopology.WORK_QUEUES.forEach { origin ->
             RabbitTopology.RETRY_TIERS.forEachIndexed { i, tier ->
                 channel.queueDeclare(
@@ -80,14 +65,6 @@ object Rabbit {
         channel.basicPublish(exchange, routingKey, props, body.toByteArray())
     }
 
-    /**
-     * Blocking consume loop with the ADR-003/004 contract baked in: manual ack
-     * as the last step, retryable failures climb the ladder, budget exhaustion
-     * re-parks without burning an attempt, anything else goes to the DLQ.
-     *
-     * If IDLE_EXIT_SECONDS is set the process exits once the queue has been
-     * quiet that long — used by integration verification, never in production.
-     */
     fun consume(channel: Channel, queue: String, registry: MeterRegistry? = null, handler: (String) -> Unit) {
         channel.basicQos(Config.int("PREFETCH", 8))
         fun outcome(name: String) = registry?.counter("airadar_messages_total", "queue", queue, "outcome", name)?.increment()
@@ -113,13 +90,6 @@ object Rabbit {
                     val message = String(body)
                     val start = System.nanoTime()
                     try {
-                        // A declared stop (PIPELINE_PAUSED, see Pause) suspends the
-                        // work, not the consumer. Cancelling basicConsume would drop
-                        // the queue to consumers=0, which the snapshot and the public
-                        // dashboard both read as "stalled" — the pause would then look
-                        // exactly like the outage it is not. The message takes the same
-                        // come-back-later path as an exhausted budget instead, so
-                        // nothing is acked away and nothing reaches the DLQ.
                         if (Pause.paused) {
                             outcome("paused")
                             parkForLater(queue, message, props)
@@ -144,14 +114,6 @@ object Rabbit {
                     lastActivity.set(System.currentTimeMillis())
                 }
 
-                /**
-                 * Come back later without burning a retry attempt: straight into
-                 * the longest wait tier (1h), headers preserved, TTL expiry
-                 * dead-letters it home. Shared by the budget breaker and by
-                 * PIPELINE_PAUSED — both are "not now", neither is "failed", and
-                 * neither may consume one of the three attempts that decide
-                 * whether an item ends up in the DLQ.
-                 */
                 private fun parkForLater(origin: String, message: String, props: AMQP.BasicProperties) {
                     val headers = props.headers.orEmpty().mapValues { it.value as Any }
                     publish(channel, "", RabbitTopology.retryQueue(origin, RabbitTopology.RETRY_TIERS.size), message, headers)

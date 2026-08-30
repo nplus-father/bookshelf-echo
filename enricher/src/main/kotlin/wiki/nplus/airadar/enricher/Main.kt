@@ -26,15 +26,7 @@ fun main() = wiki.nplus.airadar.common.App.main("enricher") {
     val channel = connection.createChannel()
     Rabbit.declareTopology(channel)
 
-    /**
-     * Fetch, persist, advance, hand off. Every step is idempotent (saveContent
-     * upserts, transition is conditional, the digester no-ops on a state it has
-     * already left), so this is safe to re-run on a redelivered item.
-     */
     fun enrich(itemId: Long, envelope: ItemEnvelope) {
-        // Sources that already deliver the full body (guardian: Content API
-        // show-fields=bodyText) skip scraping entirely — the API text beats
-        // anything Jsoup can extract, and there is no paywall/bot-wall risk.
         val supplied = envelope.rawPayload?.get("bodyText")
             ?.let { (it as? JsonPrimitive)?.content }?.takeUnless { it.isBlank() }
         val fetched = if (supplied != null) {
@@ -44,7 +36,6 @@ fun main() = wiki.nplus.airadar.common.App.main("enricher") {
         }
         repo.saveContent(itemId, fetched.level, fetched.text)
         if (repo.transition(itemId, ItemState.RECEIVED, ItemState.ENRICHED)) {
-            // Next stop is the resonance gate (ADR-010), not the digester.
             Rabbit.publish(channel, "", RabbitTopology.MATCH_QUEUE, StageMessage(itemId).encode())
             log.info("enriched item {} ({}): {}", itemId, fetched.level, envelope.title)
         }
@@ -57,9 +48,6 @@ fun main() = wiki.nplus.airadar.common.App.main("enricher") {
         val hash = UrlCanonicalizer.contentHash(envelope.title, envelope.url)
 
         when (val outcome = repo.insertReceived(envelope, canonical, hash)) {
-            // Still RECEIVED means an earlier delivery committed the insert and
-            // died before handing off to digest.q — acking here would strand the
-            // item forever, so resume it (ADR-003: redelivery must converge).
             is InsertOutcome.AlreadySeen ->
                 if (outcome.state == ItemState.RECEIVED.name) {
                     log.info("resuming interrupted enrichment of item {}: {}", outcome.itemId, envelope.title)

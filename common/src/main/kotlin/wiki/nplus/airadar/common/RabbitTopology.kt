@@ -1,15 +1,5 @@
 package wiki.nplus.airadar.common
 
-/**
- * Single source of truth for broker topology names.
- *
- * Retry ladder (ADR-004): each work queue gets tiered wait-queues
- * (`retry.<tier>.<origin>`) that have no consumers, only a message TTL and a
- * dead-letter policy pointing back at the origin queue via the default
- * exchange. The attempt count travels in the `x-retry-count` header; when it
- * exceeds [MAX_RETRIES], or the failure is non-retryable, the message parks in
- * [DLQ].
- */
 object RabbitTopology {
     const val INGEST_EXCHANGE = "ingest.x"
 
@@ -33,7 +23,6 @@ object RabbitTopology {
 
     fun routingKey(source: String): String = "item.$source"
 
-    /** Wait-queue name for a given origin queue and 1-based attempt. */
     fun retryQueue(originQueue: String, attempt: Int): String =
         "retry.${tierFor(attempt).name}.$originQueue"
 

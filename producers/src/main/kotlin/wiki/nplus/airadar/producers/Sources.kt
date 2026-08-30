@@ -28,7 +28,6 @@ private fun get(http: HttpClient, url: String, vararg headers: String): String {
     return response.body()
 }
 
-/** New arXiv submissions in the configured categories (Atom API). */
 class ArxivSource(private val http: HttpClient) {
     private val categories = Config.str("ARXIV_CATEGORIES", "cs.AI,cs.CL,cs.LG")
 
@@ -47,7 +46,6 @@ class ArxivSource(private val http: HttpClient) {
     }
 }
 
-/** Blog/news feeds (RSS or Atom), list configurable without redeploy. */
 class BlogsSource(private val http: HttpClient) {
     private val feeds = Config.str(
         "BLOG_FEEDS",
@@ -59,8 +57,8 @@ class BlogsSource(private val http: HttpClient) {
     fun poll(): List<ItemEnvelope> = feeds.flatMap { feed ->
         val host = URI.create(feed).host
         runCatching { FeedParser.parse(get(http, feed)) }
-            .getOrElse { emptyList() } // one broken feed must not block the others
-            .take(maxPerFeed) // some feeds serve their full archive
+            .getOrElse { emptyList() }
+            .take(maxPerFeed)
             .map { item ->
                 ItemEnvelope(
                     source = "blogs",
@@ -74,11 +72,6 @@ class BlogsSource(private val http: HttpClient) {
     }
 }
 
-/**
- * General news feeds (news-echo Phase 2): English sources, spike-tested
- * (docs in book-library-hub). Same mechanics as [BlogsSource]; a separate
- * source so cadence, caps and routing keys stay independently tunable.
- */
 class NewsSource(private val http: HttpClient) {
     private val feeds = Config.str(
         "NEWS_FEEDS",
@@ -109,15 +102,6 @@ class NewsSource(private val http: HttpClient) {
     }
 }
 
-/**
- * Deep journalism via the Guardian Content API (free developer tier: 5,000
- * calls/day). Unlike the RSS sources this returns the FULL article body
- * (`show-fields=bodyText`), which rides along in rawPayload so the enricher
- * can skip scraping and the matcher embeds real article content instead of a
- * headline. Queries are one API call per configured filter: the Long Read
- * series (3–6k-word reported essays) and Comment is Free (argued opinion) —
- * the genres a bookshelf can actually talk to.
- */
 class GuardianSource(private val http: HttpClient) {
     private val apiKey = Config.str("GUARDIAN_API_KEY", "")
     private val pageSize = Config.int("GUARDIAN_PAGE_SIZE", 10)
@@ -130,8 +114,8 @@ class GuardianSource(private val http: HttpClient) {
         check(apiKey.isNotBlank()) { "GUARDIAN_API_KEY is not set" }
         return queries.flatMap { filter ->
             runCatching { fetch(filter) }
-                .getOrElse { emptyList() } // one failing filter must not block the others
-        }.distinctBy { it.externalId } // an item can carry both the tag and the section
+                .getOrElse { emptyList() }
+        }.distinctBy { it.externalId }
     }
 
     private fun fetch(filter: String): List<ItemEnvelope> {
@@ -144,7 +128,6 @@ class GuardianSource(private val http: HttpClient) {
         return response["results"]!!.jsonArray.map { it.jsonObject }.mapNotNull { article ->
             val fields = article["fields"]?.jsonObject
             val bodyText = fields?.get("bodyText")?.jsonPrimitive?.content
-            // No body, nothing to resonate with (galleries, podcasts): skip.
             if (bodyText.isNullOrBlank()) return@mapNotNull null
             ItemEnvelope(
                 source = "guardian",
@@ -162,7 +145,6 @@ class GuardianSource(private val http: HttpClient) {
     }
 }
 
-/** Fast-rising recent repositories via the GitHub search API. */
 class GhTrendingSource(private val http: HttpClient) {
     fun poll(): List<ItemEnvelope> {
         val since = LocalDate.now().minusDays(Config.long("GH_TRENDING_WINDOW_DAYS", 7))
@@ -185,7 +167,6 @@ class GhTrendingSource(private val http: HttpClient) {
     }
 }
 
-/** Daily top posts from the configured subreddits (public JSON API). */
 class RedditSource(private val http: HttpClient) {
     private val subreddits = Config.str("REDDIT_SUBREDDITS", "MachineLearning+LocalLLaMA")
 
@@ -199,7 +180,6 @@ class RedditSource(private val http: HttpClient) {
                 ItemEnvelope(
                     source = "reddit",
                     externalId = post["id"]!!.jsonPrimitive.content,
-                    // Self-posts point at the discussion; link posts at the target.
                     url = if (external.startsWith("https://www.reddit.com")) permalink else external,
                     title = post["title"]!!.jsonPrimitive.content,
                     publishedAt = Instant.ofEpochSecond(post["created_utc"]!!.jsonPrimitive.content.toDouble().toLong()).toString(),

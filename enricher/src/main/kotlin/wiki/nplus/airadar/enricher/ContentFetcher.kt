@@ -12,11 +12,6 @@ class ContentFetcher {
 
     data class Fetched(val level: String, val text: String?)
 
-    /**
-     * Best-effort full-text extraction. Failure to fetch is NOT a pipeline
-     * failure (paywalls, bot walls, dead links are normal): the item degrades
-     * to metadata-only and continues (design doc §4.2).
-     */
     fun fetch(url: String): Fetched = try {
         val doc = Jsoup.connect(url)
             .userAgent("bookshelf-echo/0.1 (personal project)")

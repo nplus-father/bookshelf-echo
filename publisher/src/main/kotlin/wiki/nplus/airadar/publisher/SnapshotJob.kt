@@ -21,38 +21,12 @@ import java.nio.file.Path
 import java.time.Instant
 import java.util.Base64
 
-/**
- * The dashboard's data source (design doc §5, ADR-005): every interval, one
- * JSON snapshot of pipeline health — queue depths from the RabbitMQ management
- * API, item/LLM stats from Postgres — written to CONTENT_DIR/data/metrics/ and
- * kept in metrics_snapshots for history.
- */
 class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path, private val http: HttpClient) {
     private val log = LoggerFactory.getLogger(SnapshotJob::class.java)
 
-    // Same host/port pair the AMQP connection uses: in a container these point
-    // at the `rabbitmq` service, not at this process's own loopback.
     private val mgmtHost = Settings.rabbitmqHost
     private val mgmtPort = Config.int("RABBITMQ_MGMT_PORT", 15672)
 
-    /**
-     * Must match `management.path_prefix` in config/rabbitmq/rabbitmq.conf —
-     * which, since 2026-07-21, is unset. The broker serves the management API
-     * at the plain `/api/...` again, so the default here is empty.
-     *
-     * History worth keeping: the prefix existed only so nplus-infra's nginx
-     * could mount the UI under https://nplus.space/rabbitmq/. It moved the
-     * HTTP API along with the UI, and this client kept asking for the
-     * un-prefixed path — a 404 every interval, swallowed into a WARN, the
-     * snapshot still written, the dashboard's queue panels quietly empty.
-     * Nothing ever turned red. The UI now lives at its own subdomain
-     * (https://rabbitmq.nplus.space/), so the prefix — and that whole class
-     * of bug — is gone rather than merely fixed.
-     *
-     * The default has to be empty rather than overridden by env: [Config.str]
-     * treats a blank value as absent and falls back, so `RABBITMQ_MGMT_PATH_PREFIX=`
-     * would silently restore `/rabbitmq` and re-arm the exact bug above.
-     */
     private val mgmtPrefix = Config.str("RABBITMQ_MGMT_PATH_PREFIX", "").trimEnd('/')
 
     private val auth = Base64.getEncoder().encodeToString(
@@ -91,24 +65,11 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
     }
 
     companion object {
-        /**
-         * Kept pure and separate from the sending for the same reason [render]
-         * is: the prefix bug below was invisible at runtime (404 → WARN →
-         * empty panels), so the guard has to be a test, not a log line.
-         */
         fun queuesUri(host: String, port: Int, prefix: String): URI = URI.create(
             "http://$host:$port${prefix.trimEnd('/')}" +
                 "/api/queues?columns=name,messages,messages_ready,messages_unacknowledged,consumers",
         )
 
-        /**
-         * The snapshot's shape, kept pure and separate from the gathering so a
-         * test can assert it without a database. These key names are a
-         * cross-repo contract: the bookshelf-echo-site dashboard reads them and
-         * degrades silently on a field it does not recognise, so a rename here
-         * would otherwise ship green on both sides and surface only as a panel
-         * quietly missing from the page.
-         */
         fun render(
             now: Instant,
             queues: List<JsonElement>,
@@ -120,20 +81,7 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
             paused: Boolean,
         ): String = buildJsonObject {
             put("capturedAt", now.toString())
-            // A paused pipeline produces exactly the readings a broken one
-            // does: queues flat, no digests, no essay. Everything else in this
-            // repo treats "stale looks like healthy" as the bug to design out,
-            // and a stop nobody declared to the reader is the same bug wearing
-            // the opposite sign — so the snapshot says which it is. Passed in
-            // rather than read from Config here so a test can assert both
-            // states; the enforcement lives in the apps, this is reporting.
             put("paused", paused)
-            // How often this file is supposed to be rewritten. Without it a
-            // reader cannot tell a fresh snapshot from a stale one — the
-            // publisher went silent for 12 hours on 2026-07-19 and the
-            // dashboard looked exactly as healthy as ever. The cadence is the
-            // publisher's own, so it publishes it rather than making the site
-            // hardcode a guess.
             put("snapshotIntervalMinutes", Settings.snapshotIntervalMinutes)
             putJsonArray("queues") {
                 queues.forEach { add(it) }
@@ -147,10 +95,6 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
                 put("outputTokens", llm.outputTokens)
                 put("calls", llm.calls)
             }
-            // The same bill, itemised: which purpose and which model spent it.
-            // A single total cannot distinguish "the essay tier ran" from "a
-            // digest storm", and it never names the service doing the work —
-            // the dashboard reads this to show both.
             putJsonArray("llmTodayByPurpose") {
                 byPurpose.forEach { row ->
                     addJsonObject {
@@ -163,22 +107,12 @@ class SnapshotJob(private val repo: ItemRepository, private val contentDir: Path
                     }
                 }
             }
-            // The digester's gates, echoed so a reader of the snapshot can tell
-            // "spent $0.12" from "spent $0.12 of $0.50" — a spend figure without
-            // its limit says nothing about whether the breaker is close to
-            // tripping. Reporting only, never enforcement — which is exactly
-            // why these must come from Settings and not from a second copy of
-            // each default: shortlistMaxPerDay was published as 3 while the
-            // curator used 2, and a dashboard that misreports the limit is
-            // worse than one that omits it.
             putJsonObject("limits") {
                 put("dailyBudgetUsd", Settings.dailyBudgetUsd)
                 put("dailyDigestLimit", Settings.dailyDigestLimit)
                 put("shortlistMaxPerDay", Settings.shortlistMaxPerDay)
                 put("matchNoResonanceDistance", Settings.matchNoResonanceDistance)
             }
-            // The selection funnel's live pool (ADR-009): picks awaiting a
-            // composition, within TTL.
             putJsonObject("shortlist") {
                 put("pendingCount", shortlistPending)
             }

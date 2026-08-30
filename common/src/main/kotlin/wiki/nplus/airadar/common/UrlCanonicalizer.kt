@@ -3,11 +3,6 @@ package wiki.nplus.airadar.common
 import java.net.URI
 import java.security.MessageDigest
 
-/**
- * Cross-source dedup, layer two (layer one is the DB unique key on
- * (source, external_id) — see ADR-003). Two sources linking the same article
- * must produce the same canonical URL and therefore the same content hash.
- */
 object UrlCanonicalizer {
 
     private val TRACKING_PARAM_PREFIXES = listOf("utm_", "fbclid", "gclid", "ref_", "mc_")
@@ -22,8 +17,6 @@ object UrlCanonicalizer {
             ?.sorted()
             ?.joinToString("&")
             ?.takeIf { it.isNotEmpty() }
-        // Scheme and fragment are dropped on purpose: http/https variants and
-        // in-page anchors still identify the same document.
         return buildString {
             append(host)
             append(path)

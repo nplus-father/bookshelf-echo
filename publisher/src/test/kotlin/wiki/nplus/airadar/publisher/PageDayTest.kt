@@ -22,16 +22,12 @@ class PageDayTest {
 
     @Test
     fun `page day follows the digest, not the arrival`() {
-        // The daily cap can hold an item for days; the page it lands on must be
-        // the day its digest was written, which is what digestsForDay() selects.
         val day = pageDay(item(receivedAt = "2026-07-06T23:50:00Z", digestedAt = "2026-07-15T00:05:00Z"))
         assertEquals(LocalDate.of(2026, 7, 15), day)
     }
 
     @Test
     fun `page day is UTC, not local`() {
-        // Digested 07-15 01:00 in +08:00 is still 07-14 in UTC — the day the
-        // digests.created_at comparison in digestsForDay() will match.
         val day = pageDay(item(receivedAt = "2026-07-14T00:00:00Z", digestedAt = "2026-07-15T01:00:00+08:00"))
         assertEquals(LocalDate.of(2026, 7, 14), day)
     }

@@ -16,7 +16,6 @@ class FreshnessTest {
 
     @Test
     fun `age comes from the news's own date, not when we received it`() {
-        // Received today, but the article is a week old — the feed backfilled it.
         val age = Freshness.ageDays(
             publishedAt = at("2026-07-28T00:00:00Z"),
             receivedAt = at("2026-08-04T00:00:00Z"),
@@ -33,9 +32,6 @@ class FreshnessTest {
 
     @Test
     fun `age is whole days, so a 3-day cutoff really means 4 days old`() {
-        // Duration.toDays() truncates: anything short of a full extra day still
-        // reads as 3. Worth knowing before anyone reasons about MATCH_MAX_AGE_DAYS
-        // in hours — this is the pre-existing behaviour, kept deliberately.
         val exactly3 = at("2026-08-01T00:00:00Z")
         val almost4 = at("2026-07-31T00:00:01Z")
         val fully4 = at("2026-07-31T00:00:00Z")

@@ -11,19 +11,9 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 
-/**
- * Client for the library-bridge machine endpoints (book-library-hub Phase 1):
- * POST /search (hybrid retrieval, raw cosine distances) and POST /chapter
- * (cleaned chapter full text). Auth is the shared x-bridge-secret header.
- *
- * Distances are the resonance signal (ADR-010): smaller = the bookshelf has
- * more to say. RRF scores in the same payload are rank-only and never used
- * for thresholds.
- */
 interface LibraryClient {
     fun search(query: String, limit: Int = 8): LibrarySearchResult
 
-    /** Cleaned chapter markdown, or null when the chapter id is unknown. */
     fun chapter(chapterId: String, limit: Int = 8000): String?
 
     companion object {
@@ -35,10 +25,6 @@ interface LibraryClient {
     }
 }
 
-/**
- * Raw JSON is kept verbatim for storage in matches.books/passages; only the
- * gate signal (top book distance) is parsed out.
- */
 data class LibrarySearchResult(
     val booksJson: String,
     val passagesJson: String,
@@ -105,7 +91,6 @@ class HttpLibraryClient(private val http: HttpClient) : LibraryClient {
     }
 }
 
-/** Deterministic stand-in: strong resonance, one fake book/passage. Zero I/O. */
 class FakeLibraryClient : LibraryClient {
     override fun search(query: String, limit: Int): LibrarySearchResult = LibrarySearchResult(
         booksJson = """[{"book_id":"fake-book","title_zh":"假書","category":"business","distance":1.03}]""",

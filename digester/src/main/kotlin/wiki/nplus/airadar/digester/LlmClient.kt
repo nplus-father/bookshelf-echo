@@ -8,52 +8,23 @@ import wiki.nplus.airadar.common.JudgeResult
 import wiki.nplus.airadar.common.SelectResult
 import java.net.http.HttpClient
 
-/**
- * Provider-agnostic LLM interface. The pipeline only ever sees the result
- * types; swapping providers (Gemini today — ADR-007) touches nothing outside
- * this package.
- *
- * Four tiers, four instances (ADR-009): [fromEnv] is the cheap per-item digest
- * model, [selectorFromEnv] the stronger once-a-day selection model,
- * [essayistFromEnv] the once-a-day essay model, [judgeFromEnv] the cheap
- * relevance verdict that gates it (ADR-010). Same interface, different model +
- * per-Mtok rates. Each tier is its own instance so none can silently inherit
- * another's model — or the rates it books into the ledger.
- */
 interface LlmClient {
     val model: String
 
     fun digest(source: String, title: String, url: String, text: String?): DigestResult
 
-    /** Relative ranking: pick at most [maxPicks] of [candidates] worth a deep commentary. */
     fun select(candidates: List<ItemRepository.SelectionCandidate>, maxPicks: Int): SelectResult
 
-    /**
-     * The daily essay: news + library passages → book-informed commentary, or a
-     * refusal.
-     *
-     * [unverifiedQuotes] is non-empty only on the one revision the day allows
-     * (ADR-012): these blockquotes could not be found in the source material, so
-     * the rewrite is told exactly which sentences to fix. A revision is a second
-     * call at the most expensive tier we buy, which is why it is deterministic
-     * string comparison — not a model's opinion — that triggers it.
-     */
     fun essay(
         candidate: ItemRepository.EssayCandidate,
         chapters: List<ChapterExcerpt>,
         unverifiedQuotes: List<String> = emptyList(),
     ): EssayResult
 
-    /**
-     * The relevance judge: is the retrieved book evidence a genuine frame for
-     * this news, or a keyword coincidence? Runs on the cheap tier — vector
-     * distance cannot make this call (live calibration 2026-07-16), an LLM can.
-     */
     fun judge(candidate: ItemRepository.EssayCandidate): JudgeResult
 
     fun cost(inputTokens: Int, outputTokens: Int): Double = 0.0
 
-    /** A chapter pulled in full for quoting, with its provenance. */
     data class ChapterExcerpt(val bookTitle: String, val chapterTitle: String, val chapterId: String, val content: String)
 
     companion object {
@@ -66,24 +37,6 @@ interface LlmClient {
 
         fun fromEnv(http: HttpClient): LlmClient = gemini(http) { GeminiClient(it) }
 
-        /**
-         * The per-item digest: the highest-volume tier (one call per item, ~10 a
-         * day) and the last one that was still inheriting `GEMINI_MODEL`, which
-         * prod sets to pro.
-         *
-         * The 2026-08-04 ledger is why it gets its own: 1,500 output tokens per
-         * item, most of them thinking, at pro rates — $0.018 an item, half of
-         * the pipeline's daily spend. (It looks like a July regression in the
-         * numbers; it isn't. `790f44d` started booking thinking tokens, so the
-         * earlier $0.0045 was simply under-reported. The cost was always this.)
-         *
-         * Summarising an article and scoring it does not need that. ADR-010's
-         * amendment already found the significance score has no discrimination
-         * — nearly everything gets 4/5 — so the expensive part is buying
-         * deliberation for a judgement nobody downstream trusts. The curator
-         * (SELECT) and the essay keep their premium tiers; those are where
-         * quality shows up in the product.
-         */
         fun digesterFromEnv(http: HttpClient): LlmClient = gemini(http) {
             GeminiClient(
                 it,
@@ -102,14 +55,6 @@ interface LlmClient {
             )
         }
 
-        /**
-         * The one tier that needs its own timeout: the essay prompt carries
-         * three chapters in full, and the 2026-08 measurement on
-         * `gemini-3.1-pro-preview` was 57.3s against the 60s default — three
-         * days in a week lost the column to a timeout, not to a fault. 180s is
-         * three times the observed latency, and the day still ends either way
-         * (the job runs once, after ESSAY_HOUR_UTC).
-         */
         fun essayistFromEnv(http: HttpClient): LlmClient = gemini(http) {
             GeminiClient(
                 it,
@@ -120,13 +65,6 @@ interface LlmClient {
             )
         }
 
-        /**
-         * The judge has its own tier rather than reusing the digest client:
-         * GEMINI_MODEL is a deployment's choice for digest quality (prod runs
-         * it on pro), but the judge is a cheap yes/no call — it must not
-         * silently inherit a premium model, or the rates it books into the
-         * ledger.
-         */
         fun judgeFromEnv(http: HttpClient): LlmClient = gemini(http) {
             GeminiClient(
                 it,
@@ -138,27 +76,12 @@ interface LlmClient {
     }
 }
 
-/**
- * The model answered, Google billed for it, and the answer was unusable — no
- * text part at all (SAFETY), or a body that would not parse.
- *
- * It carries the usage on purpose. [UsageMeter] books nothing when the call
- * throws, so before this existed a parse failure at the pro tier spent real
- * money that never reached `llm_usage` — and `DAILY_LLM_BUDGET_USD` reads
- * `llm_usage`. On 2026-08-08 two essay attempts failed this way and the day's
- * recorded spend showed only the third: the breaker was measuring a third of
- * what the night actually cost.
- *
- * Still an [IllegalStateException]: to the pipeline this remains a bad answer
- * that belongs in the DLQ, not a transport fault worth retrying.
- */
 class UnusableResponse(
     message: String,
     val inputTokens: Int,
     val outputTokens: Int,
 ) : IllegalStateException(message)
 
-/** Deterministic stand-in: full pipeline runs, zero spend. Also used by tests. */
 class FakeLlmClient : LlmClient {
     override val model = "fake"
 
@@ -196,8 +119,6 @@ class FakeLlmClient : LlmClient {
         skip = false,
         skipReason = null,
         titleZh = "（測試評析）${candidate.title}",
-        // Quoted as a blockquote from real chapter text: the fake client must
-        // clear QuoteVerifier, or `LLM_PROVIDER=fake` never produces an essay.
         essayMd = chapters.joinToString("\n\n") { "> ${it.content.take(60)}" }
             .let { "（測試評析內文）\n\n$it" },
         booksJson = """[{"book_id":"fake-book","book_title":"假書","chapter_id":"fake-book:c1","chapter_title":"假章"}]""",

@@ -33,8 +33,6 @@ class QuoteVerifierTest {
 
     @Test
     fun `punctuation and line wrapping do not matter`() {
-        // Same words, rewrapped across lines and with the trailing period dropped —
-        // still a faithful quote, and the check must not call it fabricated.
         val result = verify("> 組織的溝通結構會決定\n> 它所能設計出來的系統結構\n\n正文。")
         assertTrue(result.ok, "unverified: ${result.unverified}")
     }
@@ -61,8 +59,6 @@ class QuoteVerifierTest {
 
     @Test
     fun `inline corner brackets are emphasis, not quotation`() {
-        // The prompt reserves 「」 for emphasis precisely so this cannot fail an
-        // otherwise sound essay — checking it would reject the author's own phrasing.
         assertTrue(verify("作者真正想說的是「不讀這本書就看不見的那一層結構限制」。").ok)
     }
 
@@ -78,9 +74,6 @@ class QuoteVerifierTest {
 
     @Test
     fun `the fake client's essay clears the gate`() {
-        // LLM_PROVIDER=fake exists to run the whole pipeline at zero spend. If
-        // its canned essay cannot pass the quote gate, that path silently stops
-        // producing essays and the fake stops being a rehearsal of production.
         val chapters = listOf(
             LlmClient.ChapterExcerpt("人月神話", "第七章", "mmm:c7", chapter),
         )

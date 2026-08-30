@@ -35,7 +35,6 @@ class QuoteAnnotatorTest {
         assertTrue(out.contains("""data-chapter-id="beating-the-street:docs/17/_index.md""""))
         assertTrue(out.contains("《打敗華爾街》 · Uncle Sam&#039;s Garage Sale") || out.contains("《打敗華爾街》"))
         assertTrue(out.contains("《夠了》 · 成本太多，價值太少"))
-        // 兩段引文各自歸屬，不會被同一本書全包。
         assertEquals(1, Regex("beating-the-street").findAll(out).count())
         assertEquals(1, Regex("enough:docs").findAll(out).count())
     }

@@ -10,10 +10,6 @@ object DigestRenderer {
 
     private const val HEADLINE_MIN_SCORE = 4
 
-    /**
-     * Renders the full daily page from scratch every time — regeneration is
-     * the idempotency strategy (running twice yields byte-identical output).
-     */
     fun renderDaily(day: LocalDate, items: List<DigestedItem>): String {
         val (headlines, alsoSeen) = items.partition { it.significanceScore >= HEADLINE_MIN_SCORE }
         return buildString {
@@ -39,10 +35,6 @@ object DigestRenderer {
         }
     }
 
-    /**
-     * Weekly rollup v1: the week's highlights re-rendered as one page (pure
-     * aggregation; an LLM-synthesized narrative is a later iteration).
-     */
     fun renderWeekly(weekStart: LocalDate, isoWeekLabel: String, items: List<DigestedItem>): String {
         val highlights = items.filter { it.significanceScore >= HEADLINE_MIN_SCORE }
         return buildString {

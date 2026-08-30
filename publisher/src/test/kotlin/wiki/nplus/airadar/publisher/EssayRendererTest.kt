@@ -41,7 +41,6 @@ class EssayRendererTest {
             item(),
             newsSummary = "The Pentagon will screen troops over 30.",
         )
-        // The reader is told which model wrote it, not just "AI".
         assertTrue(md.contains("model: \"gemini-2.5-pro\""))
         assertTrue(md.contains("news:"))
         assertTrue(md.contains("  url: \"https://example.com/a?x=1&y=2\""))
@@ -51,7 +50,6 @@ class EssayRendererTest {
         assertTrue(md.contains("    chapter: \"Androgens\""))
         assertTrue(md.contains("    slug: \"goodman-gilman\""))
         assertTrue(md.contains("    chapter_id: \"goodman-gilman:c1\""))
-        // Provenance is frontmatter only — never leaks into the rendered body.
         assertFalse(md.substringAfter("---\n\n").contains("回應新聞"))
         assertFalse(md.substringAfter("---\n\n").contains("本文書目"))
         assertTrue(md.trimEnd().endsWith("Second paragraph."))
@@ -92,14 +90,11 @@ class EssayRendererTest {
         assertTrue(md.contains("  category: \"policy\""))
         assertTrue(md.contains("    category: \"finance\""))
         assertTrue(md.contains("    author: \"John C. Bogle\""))
-        // A book in the retrieval payload that the essay did not cite stays out.
         assertFalse(md.contains("history"))
     }
 
     @Test
     fun `a book quoted from a passage still gets its metadata`() {
-        // 引用的書常常只出現在 passages：章節被檢索到了，書本身卻沒擠進書層的
-        // top-N（2026-07-26 的《打敗華爾街》就是）。
         val md = EssayRenderer.render(
             essay("""[{"book_id":"beating-the-street","book_title":"打敗華爾街","chapter_id":"beating-the-street:c17","chapter_title":"Ch"}]"""),
             item(),

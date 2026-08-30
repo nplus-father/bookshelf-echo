@@ -10,18 +10,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
-/**
- * SQL tests for the queries that decide what gets written and what gets paid
- * for. They run against a real Postgres with the real migrations
- * ([PostgresFixture]) because that is the only place these bugs live: the
- * schema, the constraints, and the JOINs.
- *
- * Scope is deliberate rather than exhaustive — the funnel (`selectionCandidates`
- * → `shortlistPending` → `essayCandidates`) and the spend ledger, i.e. the two
- * places where this project has actually lost days and money. The remaining
- * queries are still uncovered; they belong in later additions, not in a
- * completeness sprint.
- */
 class ItemRepositorySqlTest {
 
     private val repo get() = PostgresFixture.repo
@@ -37,11 +25,8 @@ class ItemRepositorySqlTest {
     @BeforeEach
     fun clean() = PostgresFixture.reset()
 
-    // ---- fixtures -----------------------------------------------------------
-
     private var seq = 0
 
-    /** An item that has been ingested and digested — the state the curator sees. */
     private fun digestedItem(score: Int = 4, title: String = "news ${seq++}"): Long {
         val outcome = repo.insertReceived(
             ItemEnvelope(
@@ -71,15 +56,8 @@ class ItemRepositorySqlTest {
 
     private val longAgo = OffsetDateTime.of(2000, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
 
-    // ---- the funnel ---------------------------------------------------------
-
     @Test
     fun `curator only sees items the essayist could actually consume`() {
-        // The bug this pins down (fixed in b69bf31, docs/next-steps.md): the
-        // curator used LEFT JOIN matches while the essayist used INNER JOIN, so
-        // the curator could shortlist items the essayist was structurally unable
-        // to compose — and zero essays were published for weeks. Both sides must
-        // require a matches row.
         val withMatch = digestedItem()
         match(withMatch)
         val withoutMatch = digestedItem()
@@ -109,7 +87,6 @@ class ItemRepositorySqlTest {
         match(low)
 
         assertEquals(listOf(high), repo.selectionCandidates(longAgo, minScore = 4).map { it.item.itemId })
-        // Everything was digested just now, so a cutoff in the future excludes all.
         assertEquals(
             emptyList(),
             repo.selectionCandidates(OffsetDateTime.now(ZoneOffset.UTC).plusDays(1), minScore = 1)
@@ -147,15 +124,8 @@ class ItemRepositorySqlTest {
         assertEquals(listOf(near, far), repo.essayCandidates(ttlDays = 7).map { it.itemId })
     }
 
-    // ---- the ledger ---------------------------------------------------------
-
     @Test
     fun `every purpose the code books is one the schema accepts`() {
-        // The retired critic gate booked CRITIC/ESSAY_REVISE, purposes no
-        // migration ever added: every insert failed *after* the pro-tier essay
-        // had been paid for, so the run died, re-ran on the next tick, and burned
-        // the daily budget two nights running (docs/next-steps.md P0). A purpose
-        // added in Kotlin without a migration must fail here, not in prod.
         val id = digestedItem()
         listOf("DIGEST", "WEEKLY_ROLLUP", "SELECT", "ESSAY", "JUDGE").forEach { purpose ->
             repo.recordUsage(id, purpose, "gemini-2.5-flash", 100, 10, 0.001)
@@ -177,7 +147,6 @@ class ItemRepositorySqlTest {
 
         val rows = repo.llmTodayByPurpose()
 
-        // Ordered by cost, so the dashboard's first row is the one that moved the bill.
         assertEquals(listOf("ESSAY", "SELECT", "DIGEST"), rows.map { it.purpose })
         val digest = rows.single { it.purpose == "DIGEST" }
         assertEquals(2, digest.calls)
@@ -192,8 +161,6 @@ class ItemRepositorySqlTest {
 
     @Test
     fun `the same model under two purposes stays two rows`() {
-        // Cheap and expensive tiers can share a model name; collapsing them
-        // would hide which use of it cost the money.
         val id = digestedItem()
         repo.recordUsage(id, "DIGEST", "gemini-2.5-pro", 100, 10, 0.01)
         repo.recordUsage(id, "JUDGE", "gemini-2.5-pro", 100, 10, 0.01)

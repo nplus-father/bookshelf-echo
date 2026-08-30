@@ -6,26 +6,13 @@ import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import javax.sql.DataSource
 
-/**
- * All SQL lives here. Idempotency contract (ADR-003): inserts key on
- * (source, external_id); state transitions are conditional on the expected
- * current state so redeliveries become no-ops instead of double side effects.
- */
 class ItemRepository(private val ds: DataSource) {
 
     sealed interface InsertOutcome {
         data class New(val itemId: Long) : InsertOutcome
 
-        /**
-         * Same (source, external_id) already inserted — a re-poll, or a
-         * redelivery. [state] tells the two apart: anything past RECEIVED was
-         * finished by an earlier delivery, but a row still in RECEIVED means a
-         * previous attempt committed the insert and then died before the
-         * ENRICHED transition, so the work must be resumed rather than dropped.
-         */
         data class AlreadySeen(val itemId: Long, val state: String) : InsertOutcome
 
-        /** Same content already ingested via another source. */
         data class DuplicateContent(val itemId: Long, val duplicateOf: Long) : InsertOutcome
     }
 
@@ -51,8 +38,6 @@ class ItemRepository(private val ds: DataSource) {
                     st.setString(8, envelope.rawPayload?.toString())
                     st.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
                 } ?: run {
-                    // The conflicting row is ours to report on: the caller needs
-                    // its state to decide between no-op and resume.
                     val existing = c.prepareStatement(
                         "SELECT id, state FROM items WHERE source = ? AND external_id = ?",
                     ).use { st ->
@@ -92,7 +77,6 @@ class ItemRepository(private val ds: DataSource) {
             }
         }
 
-    /** Returns false when the row was not in [from] — i.e. a redelivered message. */
     fun transition(itemId: Long, from: ItemState, to: ItemState): Boolean =
         ds.connection.use { c ->
             c.prepareStatement("UPDATE items SET state = ?, updated_at = now() WHERE id = ? AND state = ?").use { st ->
@@ -128,9 +112,7 @@ class ItemRepository(private val ds: DataSource) {
         val state: String,
         val receivedAt: OffsetDateTime,
         val extractedText: String?,
-        /** When the digest was produced; null until the item reaches DIGESTED. */
         val digestedAt: OffsetDateTime?,
-        /** Source-reported publication time; null/unparsable for some feeds. */
         val publishedAt: OffsetDateTime?,
     )
 
@@ -197,7 +179,6 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
-    /** Number of items digested so far in the current UTC day — drives the daily digest cap. */
     fun digestCountToday(): Int = ds.connection.use { c ->
         c.prepareStatement(
             "SELECT COUNT(*) FROM llm_usage WHERE purpose = 'DIGEST' AND created_at >= date_trunc('day', now() AT TIME ZONE 'utc') AT TIME ZONE 'utc'",
@@ -221,10 +202,8 @@ class ItemRepository(private val ds: DataSource) {
         val category: String,
     )
 
-    /** Everything digested on the given UTC day, for idempotent page regeneration. */
     fun digestsForDay(day: LocalDate): List<DigestedItem> = digestsForRange(day, day.plusDays(1))
 
-    /** Digests in [fromInclusive, toExclusive), UTC days. */
     fun digestsForRange(fromInclusive: LocalDate, toExclusive: LocalDate): List<DigestedItem> = ds.connection.use { c ->
         c.prepareStatement(
             """
@@ -240,12 +219,6 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
-    /**
-     * Any one item digested on the given UTC day, or null if that day has no
-     * digests. Enough to rebuild the day's page: the publisher keys the page on
-     * the digest's created_at and regenerates it from the whole day, so which
-     * item triggers the rebuild does not matter.
-     */
     fun anyItemDigestedOn(day: LocalDate): Long? = ds.connection.use { c ->
         c.prepareStatement(
             "SELECT item_id FROM digests WHERE created_at >= ?::timestamptz AND created_at < ?::timestamptz ORDER BY item_id LIMIT 1",
@@ -256,7 +229,6 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
-    /** The item whose essay was composed on [day], for `ops republish-essay`. */
     fun essayItemOn(day: LocalDate): Long? = ds.connection.use { c ->
         c.prepareStatement("SELECT item_id FROM essays WHERE day = ?::date").use { st ->
             st.setString(1, day.toString())
@@ -264,7 +236,6 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
-    /** Ids of every item sitting in [state], oldest first. Drives `ops redrive`. */
     fun itemIdsInState(state: ItemState): List<Long> = ds.connection.use { c ->
         c.prepareStatement("SELECT id FROM items WHERE state = ? ORDER BY id").use { st ->
             st.setString(1, state.name)
@@ -297,7 +268,6 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
-    /** One (purpose, model) pair of today's bill. */
     data class LlmTodayRow(
         val purpose: String,
         val model: String,
@@ -307,14 +277,6 @@ class ItemRepository(private val ds: DataSource) {
         val calls: Int,
     )
 
-    /**
-     * Today's spend broken down by what the money bought and which model bought
-     * it. [llmToday]'s total answers "are we near the breaker"; this answers
-     * "which tier moved the number" — the pro-tier ESSAY call and the hundreds
-     * of cheap DIGESTs are indistinguishable in a sum. Same breakdown the
-     * Grafana panel gets from the `purpose`/`model` counter labels, so the
-     * dashboard and the metrics tell the same story.
-     */
     fun llmTodayByPurpose(): List<LlmTodayRow> = ds.connection.use { c ->
         c.prepareStatement(
             """
@@ -387,14 +349,6 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
-    /**
-     * When the last essay was actually written, or null on an empty shelf.
-     *
-     * Feeds the stale-essay gauge: a day without an essay is legal (寧缺勿濫),
-     * but a week of them is a failure that every other metric shows as green —
-     * the queues drain, the site builds, and nothing is published. Read at
-     * startup so a container restart cannot reset the clock.
-     */
     fun lastEssayAt(): OffsetDateTime? = ds.connection.use { c ->
         c.prepareStatement("SELECT max(created_at) FROM essays").use { st ->
             st.executeQuery().use { rs ->
@@ -432,7 +386,6 @@ class ItemRepository(private val ds: DataSource) {
         val model: String,
     )
 
-    /** The most recent essay for this item — how the publisher resolves an "essay" message. */
     fun essayByItem(itemId: Long): EssayRow? = ds.connection.use { c ->
         c.prepareStatement(
             "SELECT day, item_id, title, essay_md, books, model FROM essays WHERE item_id = ? ORDER BY day DESC LIMIT 1",
@@ -455,15 +408,8 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
-    /**
-     * [category] is the digester's own labelling of the news (engineering,
-     * research, policy, product, other). It travels to the essay's frontmatter
-     * so the site can group essays — and the books they drew on — by the kind
-     * of news that pulled them off the shelf.
-     */
     data class DigestSummary(val summaryZh: String, val summaryEn: String, val category: String?)
 
-    /** The digest summaries for one item (one digest per item), or null if undigested. */
     fun digestForItem(itemId: Long): DigestSummary? = ds.connection.use { c ->
         c.prepareStatement("SELECT summary_zh, summary_en, category FROM digests WHERE item_id = ?").use { st ->
             st.setLong(1, itemId)
@@ -484,10 +430,6 @@ class ItemRepository(private val ds: DataSource) {
         val passagesJson: String,
     )
 
-    /**
-     * The essayist's menu: uncomposed shortlist picks within TTL that have
-     * match evidence, strongest resonance first, freshest as tie-break.
-     */
     fun essayCandidates(ttlDays: Int): List<EssayCandidate> = ds.connection.use { c ->
         c.prepareStatement(
             """
@@ -531,7 +473,6 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
-    /** True once the curator has run for the given UTC day — its idempotency key. */
     fun selectionRunExists(day: LocalDate): Boolean = ds.connection.use { c ->
         c.prepareStatement("SELECT 1 FROM selection_runs WHERE day = ?::date").use { st ->
             st.setString(1, day.toString())
@@ -539,7 +480,6 @@ class ItemRepository(private val ds: DataSource) {
         }
     }
 
-    /** Low-water mark for the candidate window; null before the first run ever. */
     fun lastSelectionRunAt(): OffsetDateTime? = ds.connection.use { c ->
         c.prepareStatement("SELECT MAX(created_at) FROM selection_runs").use { st ->
             st.executeQuery().use { rs ->
@@ -569,20 +509,10 @@ class ItemRepository(private val ds: DataSource) {
 
     data class SelectionCandidate(
         val item: DigestedItem,
-        /** Resonance signal from the matcher (ADR-010); always present — pre-gate items are excluded. */
         val topBookDistance: Double?,
         val booksJson: String?,
     )
 
-    /**
-     * Digests produced after [since] that scored at least [minScore] and are
-     * not yet shortlisted — the curator's candidate set, with each item's
-     * resonance evidence attached. Resonance is REQUIRED (inner join): the
-     * essayist can only compose from picks with a matches row, so a pick
-     * without one would sit in the shortlist forever (this exact bug left the
-     * essayist with zero candidates and the site without a single essay).
-     * Ordered like the daily page so the LLM sees the strongest items first.
-     */
     fun selectionCandidates(since: OffsetDateTime, minScore: Int): List<SelectionCandidate> = ds.connection.use { c ->
         c.prepareStatement(
             """
@@ -630,7 +560,6 @@ class ItemRepository(private val ds: DataSource) {
         val shortlistedAt: OffsetDateTime,
     )
 
-    /** Picks not yet consumed by a composition and younger than [ttlDays] — the live pool. */
     fun shortlistPending(ttlDays: Int): List<ShortlistRow> = ds.connection.use { c ->
         c.prepareStatement(
             """
@@ -708,19 +637,12 @@ class ItemRepository(private val ds: DataSource) {
     )
 }
 
-/**
- * What every LLM call returns whatever it was asked for: which model answered,
- * and what it cost. The digester's UsageMeter keys on this, so a call cannot be
- * timed but not billed, or billed on one path and forgotten on another — which
- * is exactly how the pro-tier spend stayed off the dashboard until 2026-07-20.
- */
 interface LlmCallResult {
     val model: String
     val inputTokens: Int
     val outputTokens: Int
 }
 
-/** Structured output of the LLM selection step (curator), provider-agnostic. */
 data class SelectResult(
     val picks: List<Pick>,
     override val model: String,
@@ -730,7 +652,6 @@ data class SelectResult(
     data class Pick(val itemId: Long, val reason: String)
 }
 
-/** Structured output of the relevance judge, provider-agnostic. */
 data class JudgeResult(
     val related: Boolean,
     val reason: String,
@@ -739,9 +660,7 @@ data class JudgeResult(
     override val outputTokens: Int,
 ) : LlmCallResult
 
-/** Structured output of the LLM essay step (essayist), provider-agnostic. */
 data class EssayResult(
-    /** The model may decline: passages that cannot support an essay produce no essay (寧缺勿濫). */
     val skip: Boolean,
     val skipReason: String?,
     val titleZh: String?,
@@ -752,7 +671,6 @@ data class EssayResult(
     override val outputTokens: Int,
 ) : LlmCallResult
 
-/** Structured output of the LLM digest step, provider-agnostic. */
 data class DigestResult(
     val summaryZh: String,
     val summaryEn: String,

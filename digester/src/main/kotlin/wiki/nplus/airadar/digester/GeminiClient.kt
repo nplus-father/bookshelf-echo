@@ -28,36 +28,18 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 
-/**
- * One instance per model tier: the defaults are the cheap digest model, the
- * curator constructs a second instance with the SELECT_* config (ADR-009).
- */
 class GeminiClient(
     private val http: HttpClient,
     override val model: String = Config.str("GEMINI_MODEL", "gemini-2.5-flash"),
     private val inputUsdPerMTok: Double = Config.double("LLM_INPUT_USD_PER_MTOK", 0.30),
     private val outputUsdPerMTok: Double = Config.double("LLM_OUTPUT_USD_PER_MTOK", 2.50),
-    /**
-     * 逾時跟著層級走，不是一個全域數字。各層的實測延遲差一個數量級：JUDGE 約
-     * 13 秒、DIGEST 約 12 秒，而 ESSAY 把三本書的章節全文塞進 prompt、跑在
-     * 3.x pro 上，2026-08-04 量到 57.3 秒 —— 對著同一個 60 秒天花板。
-     * 2026-07-28 起 essay 延遲從 ~40 秒一路爬到 ~57 秒，07-31 / 08-02 / 08-03
-     * 三次撞穿（連三次逾時就燒光當日重試，整天沒有專欄）。便宜的層級留 60 秒，
-     * 貴的那層自己給足餘裕，見 [LlmClient.essayistFromEnv]。
-     */
     timeoutSeconds: Int = Config.int("LLM_TIMEOUT_SECONDS", 60),
 ) : LlmClient {
     private val timeout: Duration = Duration.ofSeconds(timeoutSeconds.toLong())
 
-    /**
-     * 2.5 系列吃低溫吃得很好（0.2 讓 JSON 輸出穩定）；3.x 系列 Google 明講不要
-     * 壓低取樣溫度，壓了反而更容易重複、繞圈。所以預設跟著模型世代走，
-     * LLM_TEMPERATURE 仍可一次覆寫全部。
-     */
     private val temperature: Double =
         Config.double("LLM_TEMPERATURE", if (model.startsWith("gemini-3")) 1.0 else 0.2)
 
-    // Lazy so that construction (and pure parse tests) never require the key.
     private val apiKey by lazy { Config.str("GEMINI_API_KEY") }
 
     override fun digest(source: String, title: String, url: String, text: String?): DigestResult =
@@ -87,14 +69,6 @@ class GeminiClient(
             }
             putJsonObject("generationConfig") {
                 put("responseMimeType", "application/json")
-                // responseMimeType alone only *asks* for JSON — the decoder is
-                // still free-running, and on a long essay_md full of Markdown,
-                // newlines and quotes it does get the escaping wrong: 2026-08-08
-                // lost two of the day's three attempts to `finishReason=STOP`
-                // with an unparseable body (the model thought it was done). A
-                // schema constrains decoding itself, so the bytes cannot come
-                // back malformed. Every tier gets one — the essay is merely
-                // where the failure was expensive enough to notice.
                 put("responseSchema", schema)
                 put("temperature", temperature)
             }
@@ -111,8 +85,6 @@ class GeminiClient(
         val response = try {
             http.send(request, HttpResponse.BodyHandlers.ofString())
         } catch (e: java.net.http.HttpTimeoutException) {
-            // 逾時與其他 IO 錯誤分開標記：呼叫端要分得出「模型給了壞答案」與
-            // 「我們沒等到答案」——後者不該用掉當日的重試額度（EssayistJob）。
             throw RetryableFailure("Gemini request failed: ${e.message}", e, timedOut = true)
         } catch (e: java.io.IOException) {
             throw RetryableFailure("Gemini request failed: ${e.message}", e)
@@ -152,21 +124,6 @@ class GeminiClient(
         ${text?.let { "Content:\n${it.take(12000)}" } ?: "Content: (not available — judge from the title only, and score conservatively)"}
     """.trimIndent()
 
-    /**
-     * The bookshelf evidence, cut down to what the ranking actually reads.
-     *
-     * `matches.books` is stored for the whole pipeline, not for this prompt. It
-     * carries a purchase URL, the complete chapter list, and a `guide` whose
-     * tail is an entire 深度概覽 — and eight books ride along per candidate.
-     * With ten candidates a run that measured 20k input tokens in 2026-08: 92%
-     * of the prompt was this one field, and 58% of that was guides.
-     *
-     * What survives is what answers the only question here — could this book
-     * frame this news: title, author, category, distance, a few chapter titles
-     * as a scope hint, and the guide's opening thesis (the paragraph before the
-     * `📘 深度概覽` marker, which is the one-line pitch the rest elaborates).
-     * The Amazon link answers nothing and is dropped outright.
-     */
     internal fun trimBooksForSelection(booksJson: String): JsonArray {
         val books = runCatching { Json.parseToJsonElement(booksJson).jsonArray }.getOrNull()
             ?: return buildJsonArray {}
@@ -201,8 +158,6 @@ class GeminiClient(
                         put("score", c.item.significanceScore)
                         put("category", c.item.category)
                         put("summary", c.item.summaryEn)
-                        // Resonance evidence (ADR-010): how much the bookshelf
-                        // has to say. Smaller distance = stronger.
                         c.topBookDistance?.let { put("library_distance", it) }
                         c.booksJson?.let { put("library_books", trimBooksForSelection(it)) }
                     },
@@ -244,15 +199,10 @@ class GeminiClient(
         chapters: List<LlmClient.ChapterExcerpt>,
         unverifiedQuotes: List<String> = emptyList(),
     ): String {
-        // 章節在 prompt 裡再截一次的長度。取回來多少（ESSAY_CHAPTER_CHARS）與塞
-        // 進 prompt 多少必須是同一個數字，否則 essayist 會引用到它看得見、但
-        // 驗證端（拿的是取回的全文）也拿得到、而 publisher 標記時卻切掉的段落。
         val chapterChars = Settings.essayChapterChars
         val chapterBlocks = chapters.joinToString("\n\n") { ch ->
             "### 《${ch.bookTitle}》｜${ch.chapterTitle}（chapter_id: ${ch.chapterId}）\n${ch.content.take(chapterChars)}"
         }
-        // 修訂輪（ADR-012）：確定性的引文比對抓到假引文時，把那幾句原封不動丟回
-        // 去，要求只修這裡。整篇重寫會讓好的段落一起賠掉。
         val revision = if (unverifiedQuotes.isEmpty()) {
             ""
         } else {
@@ -400,29 +350,12 @@ class GeminiClient(
 
     private data class Payload(val obj: JsonObject, val inputTokens: Int, val outputTokens: Int)
 
-    /**
-     * Pull the model's JSON object out of a Gemini envelope. Both failure modes
-     * that clog the DLQ — an empty response (SAFETY block / no parts) and a
-     * truncated response (MAX_TOKENS → invalid JSON) — are surfaced with the
-     * `finishReason`/`blockReason` in the message, so `ops dlq list` shows *why*
-     * the item parked instead of an opaque parser offset.
-     */
     private fun extractPayload(body: String): Payload {
         val root = Json.parseToJsonElement(body).jsonObject
         val candidate = root["candidates"]?.jsonArray?.firstOrNull()?.jsonObject
         val finishReason = candidate?.get("finishReason")?.jsonPrimitive?.content
 
-        // Usage is read BEFORE the response is validated, and both failure exits
-        // below carry it out: Google bills for a generation we could not parse
-        // exactly as it bills for one we could. Throwing it away meant the most
-        // expensive tier could fail all night while the ledger — and therefore
-        // DAILY_LLM_BUDGET_USD — stayed quiet about it.
         val usage = root["usageMetadata"]?.jsonObject
-        // thinking tokens 按 output 價計費，卻不算在 candidatesTokenCount 裡。
-        // 在 2.5 系列上這一項通常是 0，到了 3.x 它是主要開銷：實測
-        // gemini-3.1-pro-preview 回一句話用了 38 個答案 token、335 個 thought
-        // token——只記前者，帳本會低估九成，而 DAILY_LLM_BUDGET_USD 這個斷路器
-        // 正是靠帳本判斷該不該停。ADR-011 的超支就是漏記帳來的。
         val answerTokens = usage?.get("candidatesTokenCount")?.jsonPrimitive?.int ?: 0
         val thoughtTokens = usage?.get("thoughtsTokenCount")?.jsonPrimitive?.int ?: 0
         val inputTokens = usage?.get("promptTokenCount")?.jsonPrimitive?.int ?: 0
@@ -464,28 +397,10 @@ class GeminiClient(
         this[field]?.jsonPrimitive?.content ?: error("JSON missing $field")
 
     companion object {
-        /** Where a `guide` stops pitching the book and starts being a 深度概覽. */
         private const val DEEP_OVERVIEW_MARKER = "📘 深度概覽"
 
-        /** Enough chapter titles to show a book's scope — one full list ran to 889 chars. */
         private const val SELECT_CHAPTER_TITLES = 8
 
-        /**
-         * A tier's response schema: the wire contract for decoding, not
-         * documentation. The prompts still spell the shape out in words —
-         * the schema fixes the *structure*, the prose is what gets the fields
-         * filled in well — so the two are edited together or the model is told
-         * one thing and graded on another.
-         *
-         * `propertyOrdering` is load-bearing rather than cosmetic: Gemini
-         * generates fields in schema order, so `skip` is declared before the
-         * essay body — the model commits to whether it has something worth
-         * saying before it starts saying it, the order 寧缺勿濫 asks for.
-         *
-         * Deliberately NOT expressible here: "skip=false requires essay_md".
-         * A schema cannot state a conditional requirement, so [parseEssay]
-         * still checks that one itself.
-         */
         private fun schema(json: String): JsonObject = Json.parseToJsonElement(json).jsonObject
 
         private val DIGEST_SCHEMA = schema(

@@ -10,18 +10,6 @@ import wiki.nplus.airadar.common.StageMessage
 import java.time.LocalDate
 import kotlin.system.exitProcess
 
-/**
- * Operations CLI (ADR-004; runbook: docs/runbooks/dlq-replay.md).
- *
- *   dlq list [limit]        peek parked messages (non-destructive)
- *   dlq replay [limit]      move messages back to their origin queue,
- *                           retry count reset (a replay is a fresh chance)
- *   dlq purge --confirm     drop everything parked
- *   republish <YYYY-MM-DD>  rebuild a day's digest page from the DB
- *   republish-essay <YYYY-MM-DD>  re-render a day's essay with the current renderer
- *   redrive [--apply]       re-queue items stranded mid-pipeline
- *   shortlist [ttl_days]    list picks awaiting composition (ADR-009)
- */
 fun main(args: Array<String>) {
     when (args.firstOrNull()) {
         "dlq" -> dlq(args)
@@ -33,7 +21,6 @@ fun main(args: Array<String>) {
     }
 }
 
-/** Read-only view of the live selection pool (ADR-009). */
 private fun shortlist(args: Array<String>) {
     val ttlDays = args.getOrNull(1)?.toIntOrNull() ?: 7
     val repo = ItemRepository(Db.dataSource("ops"))
@@ -50,23 +37,6 @@ private fun shortlist(args: Array<String>) {
     println("${pending.size} pick(s) pending composition (TTL $ttlDays day(s))")
 }
 
-/**
- * Re-emits the stage message for every item still sitting in ENRICHED,
- * MATCHED or DIGESTED, so items whose hand-off was lost get moving again.
- * Also the migration path for pre-matcher backlogs: ENRICHED items now route
- * to match.q (ADR-010), wherever their original message was parked.
- *
- * Each stage commits its state transition and only then publishes the message
- * for the next queue; a process that dies in between leaves the row advanced
- * with nothing left to drive it, and the redelivered ingest message cannot tell
- * that state apart from an item legitimately waiting its turn under the daily
- * cap. Nothing can distinguish them from the DB alone — so this re-queues the
- * whole state rather than guessing.
- *
- * That is safe precisely because of ADR-003: consumers are idempotent, so a
- * duplicate for an item that was already queued costs one trip round the retry
- * ladder and then no-ops on a state it has already left. No duplicate LLM spend.
- */
 private fun redrive(args: Array<String>) {
     val apply = args.contains("--apply")
     val repo = ItemRepository(Db.dataSource("ops"))
@@ -98,11 +68,6 @@ private fun redrive(args: Array<String>) {
     connection.close()
 }
 
-/**
- * Re-emits one of a day's items onto publish.q so the publisher regenerates
- * that day's page. Regeneration reads the whole day from Postgres and is
- * idempotent, so this is safe to run repeatedly.
- */
 private fun republish(args: Array<String>) {
     val day = args.getOrNull(1)?.let {
         runCatching { LocalDate.parse(it) }.getOrElse { usage() }
@@ -122,13 +87,6 @@ private fun republish(args: Array<String>) {
     connection.close()
 }
 
-/**
- * Re-emits a day's essay message onto publish.q so the publisher re-renders
- * essays/<day>.md from the DB with the current EssayRenderer. Use it after an
- * EssayRenderer/frontmatter change to migrate an already-published essay whose
- * file on disk (and in the site checkout) is still the old format — the
- * site-publisher then mirrors the refreshed file. Idempotent.
- */
 private fun republishEssay(args: Array<String>) {
     val day = args.getOrNull(1)?.let {
         runCatching { LocalDate.parse(it) }.getOrElse { usage() }
@@ -160,7 +118,6 @@ private fun dlq(args: Array<String>) {
             val peeked = drain(channel, limit) { msg ->
                 println("[origin=${origin(msg)}] error=${header(msg, "x-error")} body=${String(msg.body).take(120)}")
             }
-            // basicGet consumed them; requeue untouched so `list` stays read-only.
             channel.basicNack(0, true, true)
             println("$peeked message(s) shown (of $total in ${RabbitTopology.DLQ})")
         }
