@@ -108,3 +108,7 @@ has the whole table.
 | M5        | Selection tier: daily curator, shortlist pool, per-tier model config (ADR-009) | done  |
 | M6        | news-echo Phase 1+2: resonance gate (`matcher`, ADR-010), news RSS source, daily book-informed essay (`essayist`) | done  |
 | M7        | Site templates for essays, LINE push reuse (nplus-backend job), live threshold calibration | —     |
+
+## Status contract
+
+`docs/status.md` declares where this pipeline is deployed, which public JSON says whether it is paused, and the next gate. The cockpit reads it plus git history into `status.json`; the pipeline's own paused flag in `metrics/latest.json` is the source of truth for the `paused` state, never a hand-written line. Contract and phases: flock's [ADR-0005](https://github.com/nplus-father/flock/blob/main/docs/adr/0005-status-contract-and-cockpit.md).
