@@ -9,6 +9,8 @@ deployed:
   - id: site
     url: https://nplus.wiki/bookshelf-echo-site/
     expect: 200
+    token_env: GATE_BUILD_TOKEN      # nplus.wiki 的閘門：與 portal build 同一個 header token
+    token_header: x-gate-build
 data:
   - id: metrics
     url: https://raw.githubusercontent.com/nplus-father/bookshelf-echo-site/data/metrics/latest.json
