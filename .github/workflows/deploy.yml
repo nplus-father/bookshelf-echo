@@ -48,35 +48,35 @@ jobs:
 
   deploy:
     needs: build-and-push
-    runs-on: ubuntu-latest
+    # Production is the machine the runner lives on, so there is nothing to SSH
+    # into (2026-09-20). The previous appleboy/ssh-action hop needed a private
+    # key in SERVER_SSH_KEY that could log in as andrew (sudo + docker) and kept
+    # public port 22 open for it. nplus-host, not hugobook: hugobook runners are
+    # containers without the docker socket or /home/andrew; nplus-host is the
+    # host-level andrew-PC-1 runner, running as andrew with docker available.
+    runs-on: [self-hosted, nplus-host]
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.2.5
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: GHCR_TOKEN
-          script: |
-            cd ~/workspace/bookshelf-echo
-            echo "$GHCR_TOKEN" | docker login ghcr.io -u andrewnplus --password-stdin
-            git pull --ff-only
-            docker compose pull producers enricher matcher digester publisher
-            # postgres-exporter 一併列入：它不是五個 app 的依賴，不列的話它的
-            # compose 改動永遠不會被套用（2026-07-25 發佈 metrics port 那次
-            # 就是這樣漏掉、事後手動補的）。rabbitmq 是 app 的依賴，up -d 會
-            # 順帶重建，不用列。
-            docker compose up -d producers enricher matcher digester publisher postgres-exporter
-            # site-publisher runs a mounted script (config/site-publish.sh) as a
-            # long-lived process — it reads the script once at start. Plain `up -d`
-            # sees no image/config diff and leaves it alone, so a script change would
-            # silently keep running the old copy (caused the 2026-07-12 publishing
-            # outage). `restart` reloads the script but does NOT apply changed
-            # `environment:` — a var added to docker-compose.yml never reached the
-            # container, which is how SITE_VERSION_URL silently no-op'd on 2026-07-25.
-            # --force-recreate is the only one that does both.
-            docker compose up -d --force-recreate site-publisher
-            docker image prune -f
-            echo "bookshelf-echo deploy completed at $(date)"
+      - name: Deploy on the host
+        working-directory: /home/andrew/workspace/bookshelf-echo
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u andrewnplus --password-stdin
+          git pull --ff-only
+          docker compose pull producers enricher matcher digester publisher
+          # postgres-exporter 一併列入：它不是五個 app 的依賴，不列的話它的
+          # compose 改動永遠不會被套用（2026-07-25 發佈 metrics port 那次
+          # 就是這樣漏掉、事後手動補的）。rabbitmq 是 app 的依賴，up -d 會
+          # 順帶重建，不用列。
+          docker compose up -d producers enricher matcher digester publisher postgres-exporter
+          # site-publisher runs a mounted script (config/site-publish.sh) as a
+          # long-lived process — it reads the script once at start. Plain `up -d`
+          # sees no image/config diff and leaves it alone, so a script change would
+          # silently keep running the old copy (caused the 2026-07-12 publishing
+          # outage). `restart` reloads the script but does NOT apply changed
+          # `environment:` — a var added to docker-compose.yml never reached the
+          # container, which is how SITE_VERSION_URL silently no-op'd on 2026-07-25.
+          # --force-recreate is the only one that does both.
+          docker compose up -d --force-recreate site-publisher
+          docker image prune -f
+          echo "bookshelf-echo deploy completed at $(date)"
