@@ -111,4 +111,4 @@ has the whole table.
 
 ## Status contract
 
-`docs/status.md` declares where this pipeline is deployed, which public JSON says whether it is paused, and the next gate. The cockpit reads it plus git history into `status.json`; the pipeline's own paused flag in `metrics/latest.json` is the source of truth for the `paused` state, never a hand-written line. Contract and phases: flock's [ADR-0005](https://github.com/nplus-father/flock/blob/main/docs/adr/0005-status-contract-and-cockpit.md).
+`docs/status.md` declares where this pipeline is deployed, which public JSON says whether it is paused, and the next gate. The cockpit reads it plus git history into `status.json`; the pipeline's own paused flag in `metrics/latest.json` is the source of truth for the `paused` state, never a hand-written line. Contract and phases: lotto's [ADR-0005](https://github.com/nplus-father/lotto/blob/main/docs/adr/0005-status-contract-and-cockpit.md).
