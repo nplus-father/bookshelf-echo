@@ -5,7 +5,7 @@ plugins {
 }
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(25)
 }
 
 application {
@@ -13,7 +13,7 @@ application {
 }
 
 jib {
-    from { image = "eclipse-temurin:21-jre-alpine" }
+    from { image = "eclipse-temurin:25-jre-alpine" }
     to {
         image = "ghcr.io/nplus-father/bookshelf-echo-matcher"
         tags = setOf("latest", project.version.toString())
