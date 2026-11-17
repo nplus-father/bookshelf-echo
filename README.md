@@ -1,5 +1,7 @@
 # bookshelf-echo
 
+> **Retired on 2026-10-26.** The pipeline, its database and its deploy workflow are shut down; nothing here runs in production any more. The code and the ADRs stay as a record.
+
 A queue-based pipeline that collects AI-related news and papers from multiple
 sources, digests them with an LLM, and publishes a daily static digest — plus a
 public dashboard of the **system's own health metrics** (queue depth, latency,
